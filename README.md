@@ -1,478 +1,262 @@
-# Camoufox MCP Server 🦊
+# Camoufox MCP Server for NAS and Docker
 
-An MCP (Model Context Protocol) server that provides browser automation capabilities using [Camoufox](https://github.com/daijro/camoufox) - a privacy-focused Firefox fork with advanced anti-detection features.
+This fork turns `camoufox-mcp` into a MCP server that can run as a long-lived Docker service on a NAS and be exposed as a remote MCP endpoint for clients such as Claude and ChatGPT.
 
-## Features
+It keeps the original `browse` tool, but adds a network-facing HTTP mode, a health endpoint, Docker Compose support, and runtime configuration via environment variables or CLI flags.
 
-- 🛡️ **Advanced Anti-Detection**: Rotating OS fingerprints, realistic cursor movements, and browser fingerprint spoofing
-- 🔧 **Enhanced Parameters**: Configurable wait strategies, timeouts, viewport dimensions, and more
-- 🌐 **Cross-Platform**: Works on Windows, macOS, and Linux (including Docker)
-- 📸 **Screenshot Support**: Capture page screenshots alongside HTML content
-- 🚀 **Easy Integration**: Compatible with Claude Desktop, VS Code, Cursor, Windsurf, and more
+## What changed in this fork
 
-## Requirements
+- Added dual transport support:
+  - `stdio` for local desktop clients
+  - `http` for remote MCP clients and container deployments
+- Added MCP HTTP endpoint with session support at `/mcp`
+- Added health endpoint at `/health`
+- Added optional Bearer token protection with `MCP_AUTH_TOKEN`
+- Reworked the Docker image for long-running NAS usage
+- Added `docker-compose.yml` and `.env.example`
+- Removed the hardcoded `linux/amd64` Docker platform pin so the image can build for the active Docker target platform
 
-- Node.js 18 or higher (Node.js 20+ recommended for full camoufox CLI support)
-- Python 3.x (for running tests)
+## Important for Claude and ChatGPT
 
-## Configuration for AI Assistants
+Running the server on your NAS is only one half of the setup. For Claude and ChatGPT to connect to it as a remote MCP server, the endpoint must also be reachable over public HTTPS.
 
-<details>
-<summary>Claude Code (CLI)</summary>
+- ChatGPT only supports remote MCP servers, not local ones.
+- Claude remote connectors are also reached from Anthropic's cloud, not from your desktop app directly.
+- A NAS endpoint that is only available inside your LAN will not be enough for those remote connectors.
 
-Run the following command to add the Camoufox MCP server to Claude Code:
+In practice, you usually want one of these setups:
 
-```bash
-claude mcp add context7 -- npx -y camoufox-mcp-server
-```
-</details>
+1. NAS + reverse proxy + public domain + HTTPS
+2. NAS + tunnel service + public HTTPS URL
+3. NAS behind a firewall that explicitly allows the vendor IP ranges and exposes the service publicly
 
-<details>
-<summary>Claude Desktop</summary>
+## Quick start on a NAS
 
-Add to your Claude Desktop configuration file:
-
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`  
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`  
-**Linux**: `~/.config/Claude/claude_desktop_config.json`
-
-#### Using npx (Recommended)
-```json
-{
-  "mcpServers": {
-    "camoufox": {
-      "command": "npx",
-      "args": ["camoufox-mcp-server"]
-    }
-  }
-}
-```
-
-#### Using Docker
-```json
-{
-  "mcpServers": {
-    "camoufox": {
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "followthewhit3rabbit/camoufox-mcp:latest"]
-    }
-  }
-}
-```
-
-#### Using Global Installation
-```json
-{
-  "mcpServers": {
-    "camoufox": {
-      "command": "camoufox-mcp-server"
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>VS Code (with Continue extension)</summary>
-
-Add to your `.continue/config.json`:
-
-```json
-{
-  "models": [...],
-  "mcpServers": {
-    "camoufox": {
-      "command": "npx",
-      "args": ["camoufox-mcp-server"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>Cursor</summary>
-
-Add to your Cursor settings (Preferences → Features → MCP):
-
-```json
-{
-  "mcp": {
-    "servers": {
-      "camoufox": {
-        "command": "npx",
-        "args": ["camoufox-mcp-server"]
-      }
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>Windsurf</summary>
-
-Add to your Windsurf configuration file at `~/.windsurf/mcp.json`:
-
-```json
-{
-  "servers": {
-    "camoufox": {
-      "command": "npx",
-      "args": ["camoufox-mcp-server"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>Cline (VS Code Extension)</summary>
-
-Add to VS Code settings.json:
-
-```json
-{
-  "cline.mcpServers": {
-    "camoufox": {
-      "command": "npx",
-      "args": ["camoufox-mcp-server"]
-    }
-  }
-}
-```
-</details>
-
-## Installation
-
-### Quick Start with npx
-
-The easiest way to use Camoufox MCP Server is with npx (no installation required):
+1. Copy the example environment file:
 
 ```bash
-npx camoufox-mcp-server
+cp .env.example .env
 ```
 
-### Docker Installation
+2. Edit `.env`.
 
-Run the server using Docker:
+If you want the simplest first test, leave `MCP_AUTH_TOKEN` empty and expose the server only through a trusted HTTPS endpoint.
+
+3. Build and start the service:
 
 ```bash
-docker run -i --rm followthewhit3rabbit/camoufox-mcp:latest
+docker compose up -d --build
 ```
 
-### NPM Installation
-
-Install globally:
+4. Verify the container locally on the NAS:
 
 ```bash
-npm install -g camoufox-mcp-server
+curl http://127.0.0.1:3000/health
 ```
 
-Or add to your project:
+You should get a JSON response with `"status": "ok"`.
+
+## Docker usage
+
+### Docker Compose
+
+The included `docker-compose.yml` is the recommended NAS setup.
+
+```yaml
+services:
+  camoufox-mcp:
+    build:
+      context: .
+    ports:
+      - "3000:3000"
+    environment:
+      MCP_TRANSPORT: http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 3000
+      MCP_PATH: /mcp
+      MCP_HEALTH_PATH: /health
+```
+
+### Plain Docker
 
 ```bash
-npm install camoufox-mcp-server
+docker build -t camoufox-mcp .
+docker run -d \
+  --name camoufox-mcp \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -e MCP_TRANSPORT=http \
+  -e MCP_HOST=0.0.0.0 \
+  -e MCP_PORT=3000 \
+  camoufox-mcp
 ```
 
-## Usage
+If you explicitly want the old container-style stdio behavior, start it like this:
 
-Once configured, the Camoufox MCP server provides a `browse` tool that your AI assistant can use to navigate websites and retrieve content.
-
-### Natural Language Triggers
-
-The AI assistant will automatically use the browse tool when you use phrases like:
-
-**Basic Browsing:**
-- "**Search** for information about..."
-- "**Visit** this website: ..."
-- "**Check** what's on ..."
-- "**Navigate** to ..."
-- "**Fetch** content from ..."
-- "**Browse** to ..."
-- "**Go to** the website ..."
-- "**Open** this page: ..."
-- "**Look at** this URL: ..."
-- "**Scrape** data from ..."
-
-**Privacy & Stealth:**
-- "Browse **anonymously**..."
-- "Visit **privately**..."
-- "Browse in **stealth mode**..."
-- "**Hide my IP** while browsing..."
-- "Browse **through a proxy**..."
-- "**Block tracking** while visiting..."
-
-**Screenshots:**
-- "**Take a screenshot** of..."
-- "**Capture an image** of..."
-- "**Show me visually** what ... looks like"
-- "I want to **see how** ... appears"
-
-**Performance:**
-- "**Quick browse** to..."
-- "**Fast loading** of..."
-- "Browse **without images**..."
-- "**Lightweight browsing** to..."
-- "**Text-only** content from..."
-
-### Basic Usage Examples
-
-```
-Can you check what's on example.com?
+```bash
+docker run -i --rm -e MCP_TRANSPORT=stdio camoufox-mcp
 ```
 
-```
-Search for information on the latest tech news from techcrunch.com
+## Configuration
+
+The server can be configured through environment variables or CLI flags.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MCP_TRANSPORT` | `stdio` locally, `http` in Docker | `stdio` or `http` |
+| `MCP_HOST` | `0.0.0.0` in HTTP mode | Bind host for HTTP mode |
+| `MCP_PORT` | `3000` | Bind port for HTTP mode |
+| `MCP_PATH` | `/mcp` | MCP endpoint path |
+| `MCP_HEALTH_PATH` | `/health` | Health endpoint path |
+| `MCP_ENABLE_JSON_RESPONSE` | `true` | Enables JSON responses for compatible MCP clients |
+| `MCP_AUTH_TOKEN` | unset | Optional Bearer token for clients that can send static auth headers |
+
+CLI examples:
+
+```bash
+node dist/index.js --transport http --host 0.0.0.0 --port 3000
+node dist/index.js --transport stdio
 ```
 
-```
-Visit github.com and tell me what's trending
+## Running modes
+
+### Local stdio mode
+
+Use this when the MCP client starts the server as a child process on the same machine.
+
+```bash
+npm run build
+npm run start:stdio
 ```
 
-The AI will automatically use the browse tool to navigate to websites and retrieve their HTML content.
+For local non-Docker development, Node 20 LTS is the safest choice because Camoufox pulls in native dependencies.
 
-### Advanced Usage
+### Local HTTP mode
 
-```
-Please visit example.com using a Windows browser with a 1920x1080 viewport and wait for all resources to load. Take a screenshot too.
-```
+Use this to test the remote MCP endpoint without Docker.
 
-### More Conversational Examples
-
-```
-I need to research the current stock price of Apple. Can you go to finance.yahoo.com and search for AAPL?
+```bash
+npm run build
+npm run start:http
 ```
 
-```
-Check if the restaurant's website has their menu online. Visit bistro-example.com and look for their menu section.
+## Reverse proxy notes
+
+If you place the service behind Nginx, Caddy, Traefik, Synology reverse proxy, or a tunnel, keep these points in mind:
+
+- Expose the MCP endpoint over HTTPS
+- Forward `Authorization` headers unchanged if you use `MCP_AUTH_TOKEN`
+- Forward `mcp-session-id` headers unchanged
+- Do not buffer streaming responses on the MCP endpoint
+- Forward `GET`, `POST`, and `DELETE` requests to the same MCP path
+
+If you are targeting Claude remote connectors, remember that Anthropic connects from its own cloud infrastructure. Your public endpoint must be reachable from there.
+
+## Claude integration
+
+For Claude remote connectors, use the public HTTPS MCP URL, for example:
+
+```text
+https://mcp.example.com/mcp
 ```
 
-```
-I'm looking for job postings in tech. Can you browse to linkedin.com/jobs and see what's available?
+Current Anthropic guidance says:
+
+- Remote MCP servers are added through `Customize > Connectors`
+- Claude Desktop remote connectors are not configured through `claude_desktop_config.json`
+- Connections originate from Anthropic's cloud infrastructure, so your server must be publicly reachable over HTTPS
+
+If you are using the Claude API MCP connector, Anthropic also supports direct HTTP MCP servers from the Messages API.
+
+## ChatGPT integration
+
+For ChatGPT developer mode / apps, use the same public HTTPS MCP URL:
+
+```text
+https://mcp.example.com/mcp
 ```
 
-```
-Navigate to the documentation site for React and find information about hooks.
+Current OpenAI guidance says:
+
+- ChatGPT developer mode supports remote MCP servers over SSE and streaming HTTP
+- ChatGPT does not connect to local MCP servers directly
+- For ChatGPT app-style integrations, OAuth is the recommended production auth model
+
+### Important auth note
+
+The built-in `MCP_AUTH_TOKEN` support in this fork is useful for:
+
+- custom agents that can send a static Bearer token
+- API-driven MCP clients
+- reverse-proxy or gateway setups you control
+
+For first-party Claude and ChatGPT UI integrations, the clean long-term approach is usually:
+
+1. no auth while testing on a tightly controlled public endpoint, or
+2. a proper MCP-compatible OAuth flow in front of the server
+
+This fork does not implement a full OAuth provider yet.
+
+## Example API usage
+
+### Anthropic Messages API MCP connector
+
+Anthropic's API docs support remote HTTP MCP servers. A minimal server definition looks like:
+
+```json
+{
+  "type": "url",
+  "url": "https://mcp.example.com/mcp",
+  "name": "camoufox"
+}
 ```
 
-The AI can use advanced parameters like:
-- `os`: Spoof operating system (windows, macos, linux)
-- `waitStrategy`: How to wait for page load (domcontentloaded, load, networkidle)
-- `timeout`: Maximum time to wait (5-300 seconds)
-- `viewport`: Custom browser dimensions
-- `screenshot`: Capture a screenshot
-- `humanize`: Enable realistic mouse movements
-- `locale`: Set browser locale (e.g., 'en-US', 'fr-FR')
-- `block_webrtc`: Block WebRTC for privacy
-- `proxy`: Use a proxy server for requests
-- `enable_cache`: Enable browser caching
-- `window`: Set fixed window size
+### OpenAI Responses API MCP tool
 
-### Example with Privacy Options
+OpenAI's MCP docs support remote MCP servers in the `tools` array. A minimal tool entry looks like:
 
+```json
+{
+  "type": "mcp",
+  "server_label": "camoufox",
+  "server_url": "https://mcp.example.com/mcp",
+  "require_approval": "never"
+}
 ```
-Browse example.com with WebRTC blocked and through a proxy server proxy.example.com:8080
-```
-
-### Example with Custom Preferences
-
-```
-Visit example.com with a fixed 1280x720 window size and custom Firefox preferences to disable JavaScript
-```
-
-### Example with Performance Optimization
-
-```
-Browse news.example.com with images blocked for faster loading and a 10 second timeout
-```
-
-### Privacy & Stealth Examples
-
-```
-Browse example.com anonymously with maximum privacy and stealth mode
-```
-
-```
-Visit sensitive-site.com through a proxy to hide my IP address
-```
-
-```
-Browse privately to banking-site.com with WebRTC blocked and fingerprint protection
-```
-
-```
-Access geo-blocked content via proxy server proxy.example.com:8080
-```
-
-### Screenshot Examples
-
-```
-Take a screenshot of the homepage at example.com
-```
-
-```
-Capture an image of how the login page looks on mobile-site.com
-```
-
-```
-Show me visually what the product page looks like on store.example.com
-```
-
-### Performance & Speed Examples
-
-```
-Quick browse to news-site.com without loading images for faster access
-```
-
-```
-Lightweight browsing to documentation-site.com, text content only
-```
-
-```
-Fast loading of search results from search-engine.com, no images needed
-```
-
-### Advanced Privacy Combinations
-
-```
-Visit example.com with WebRTC blocked, WebGL blocked, images blocked, and geoip detection disabled
-```
-
-```
-Browse anonymously through proxy 192.168.1.100:8080 with username 'user' and password 'pass' to access restricted content
-```
-
-### Cross-Origin & Iframe Interaction
-
-```
-Browse iframe-test.example.com with Cross-Origin-Opener-Policy disabled to allow clicking elements in iframes
-```
-
-```
-Access embedded content on complex-site.com and interact with all iframe elements
-```
-
-## Tool Parameters
-
-The `browse` tool accepts the following parameters:
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `url` | string | required | The URL to navigate to |
-| `os` | enum | random | Operating system to spoof: 'windows', 'macos', or 'linux' |
-| `waitStrategy` | enum | 'domcontentloaded' | Wait strategy: 'domcontentloaded', 'load', or 'networkidle' |
-| `timeout` | number | 60000 | Page load timeout in milliseconds (5000-300000) |
-| `humanize` | boolean | true | Enable realistic cursor movements |
-| `locale` | string | system default | Browser locale (e.g., 'en-US') |
-| `viewport` | object | {width: 1920, height: 1080} | Browser viewport dimensions |
-| `screenshot` | boolean | false | Capture a screenshot of the page (triggers: "screenshot", "image", "capture", "show visually") |
-| `block_webrtc` | boolean | true | Block WebRTC entirely for enhanced privacy (triggers: "private", "stealth", "hide IP") |
-| `proxy` | string/object | none | Proxy configuration (triggers: "through proxy", "anonymously", "hide IP", "via proxy") |
-| `enable_cache` | boolean | false | Cache pages and requests (uses more memory) |
-| `firefox_user_prefs` | object | none | Custom Firefox user preferences |
-| `exclude_addons` | array | none | List of default addons to exclude |
-| `window` | array | random | Fixed window size [width, height] instead of random |
-| `args` | array | none | Additional browser command-line arguments |
-| `block_images` | boolean | false | Block all images for faster loading (triggers: "fast", "quick", "no images", "text only") |
-| `block_webgl` | boolean | false | Block WebGL to prevent fingerprinting (triggers: "maximum privacy", "block tracking") |
-| `disable_coop` | boolean | false | Disable Cross-Origin-Opener-Policy for iframe interaction (triggers: "iframe", "embedded content") |
-| `geoip` | boolean | true | Auto-detect geolocation based on IP address |
-| `headless` | boolean | auto | Run in headless mode (auto-detects best mode if not set) |
 
 ## Development
 
-### Building from Source
-
 ```bash
-# Clone the repository
-git clone https://github.com/whit3rabbit/camoufox-mcp.git
-cd camoufox-mcp
-
-# Install dependencies
 npm install
-
-# Build the TypeScript code
 npm run build
-
-# Run locally
-npm start
-```
-
-### Running Tests
-
-```bash
-# Run test suite
-npm test
-
-# Run with local server
-python3 tests/test_client.py --mode local
-```
-
-### Docker Build
-
-```bash
-# Build and publish multi-architecture image
-./publish_docker.sh
-
-# Build for specific architecture
-docker build -t camoufox-mcp .
+npm run start:stdio
 ```
 
 ## Troubleshooting
 
-### Common Issues
+### The NAS container starts, but Claude or ChatGPT cannot connect
 
-1. **"Camoufox browser not found"**
-   - Run `npx camoufox fetch` to download the browser
-   - For Docker, the browser is pre-installed
+Usually this means one of these:
 
-2. **"Cannot find module"**
-   - Ensure you've run `npm install` or are using npx
-   - For global install: `npm install -g camoufox-mcp-server`
+- the server is not publicly reachable over HTTPS
+- the reverse proxy does not forward `GET`, `POST`, and `DELETE` to the MCP path
+- the proxy strips the `Authorization` or `mcp-session-id` header
+- the proxy buffers the response stream
+- the firewall blocks traffic from the vendor cloud
 
-3. **"MCP server not responding"**
-   - Check that the server is properly configured in your AI assistant
-   - Verify the command path is correct
-   - Check logs for error messages
+### The service works locally, but not through the public URL
 
-### Debug Mode
+Check:
 
-To see detailed logs, run the server directly:
+- TLS certificate is valid
+- the public URL points to the same MCP path as `MCP_PATH`
+- the reverse proxy does not rewrite `/mcp` unexpectedly
+- the health endpoint works through the public hostname
 
-```bash
-node dist/index.js
-```
+### Token auth works in your own agent, but not in Claude or ChatGPT UI
 
-## Privacy & Security
-
-Camoufox MCP Server uses the Camoufox browser, which includes:
-- Fingerprint spoofing to prevent tracking
-- Built-in uBlock Origin for ad blocking
-- WebGL and WebRTC spoofing
-- Canvas fingerprint protection
-- Timezone and locale spoofing
+That is expected in many setups. Their first-party remote connector flows are centered around no-auth or OAuth-based server onboarding, not arbitrary static Bearer headers.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## Acknowledgments
-
-- [Camoufox](https://github.com/daijro/camoufox) - The privacy-focused browser engine
-- [Model Context Protocol](https://modelcontextprotocol.io) - The MCP specification
-- [Anthropic](https://anthropic.com) - For creating the MCP standard
-
-## Support
-
-For issues and feature requests, please use the [GitHub Issues](https://github.com/whit3rabbit/camoufox-mcp/issues) page.
+MIT License. See `LICENSE`.

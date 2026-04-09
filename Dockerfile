@@ -1,7 +1,5 @@
-# Force AMD64 platform even on ARM64 hosts
-FROM --platform=linux/amd64 node:20-bullseye AS builder
+FROM node:20-bullseye AS builder
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     build-essential \
@@ -10,32 +8,48 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy package files
 COPY package.json package-lock.json* ./
-
-# Install dependencies (will use AMD64 binaries)
 RUN npm ci
 
-# Copy source code
 COPY . .
-
-# Build TypeScript
 RUN npm run build
 
-# Install camoufox globally (AMD64 version)
-RUN npm install -g camoufox@0.1.2
+# Fetch the Camoufox browser for the active build platform.
+RUN npx -y camoufox@0.1.2 fetch
 
-# Fetch the browser (AMD64 version)
-RUN camoufox fetch
+FROM node:20-bullseye-slim AS runtime
 
-# Runtime stage - also forced to AMD64
-FROM --platform=linux/amd64 node:20-bullseye-slim AS runtime
+ENV NODE_ENV=production \
+    MCP_TRANSPORT=http \
+    MCP_HOST=0.0.0.0 \
+    MCP_PORT=3000 \
+    MCP_PATH=/mcp \
+    MCP_HEALTH_PATH=/health \
+    MCP_ENABLE_JSON_RESPONSE=true
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    xvfb xauth \
-    libgtk-3-0 libx11-xcb1 libxfixes3 libxrandr2 libxtst6 libx11-6 libxcomposite1 \
-    libasound2 libdbus-glib-1-2 libpci3 libxss1 libgconf-2-4 libnss3 libatk1.0-0 \
-    libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 libatspi2.0-0 \
+    xvfb \
+    xauth \
+    tini \
+    libgtk-3-0 \
+    libx11-xcb1 \
+    libxfixes3 \
+    libxrandr2 \
+    libxtst6 \
+    libx11-6 \
+    libxcomposite1 \
+    libasound2 \
+    libdbus-glib-1-2 \
+    libpci3 \
+    libxss1 \
+    libgconf-2-4 \
+    libnss3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libgbm1 \
+    libatspi2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1001 myappuser
@@ -48,4 +62,10 @@ RUN npm ci --omit=dev
 COPY --from=builder --chown=myappuser:myappuser /app/dist ./dist
 COPY --from=builder --chown=myappuser:myappuser /root/.cache/camoufox /home/myappuser/.cache/camoufox
 
-ENTRYPOINT ["xvfb-run", "-a", "--server-args=-screen 0 1280x1024x24", "node", "dist/index.js"]
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
+  CMD node -e "const http=require('http'); const port=Number(process.env.MCP_PORT||3000); const path=process.env.MCP_HEALTH_PATH||'/health'; const req=http.get({host:'127.0.0.1',port,path}, res => process.exit(res.statusCode===200?0:1)); req.on('error', () => process.exit(1));"
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["xvfb-run", "-a", "--server-args=-screen 0 1280x1024x24", "node", "dist/index.js"]

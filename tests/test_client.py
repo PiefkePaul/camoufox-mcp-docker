@@ -17,7 +17,7 @@ class MCPTestClient:
     def start_server(self):
         if self.mode == 'docker':
             print(f"Starting container from image: {self.image_name}")
-            command = ["docker", "run", "-i", "--rm", self.image_name]
+            command = ["docker", "run", "-i", "--rm", "-e", "MCP_TRANSPORT=stdio", self.image_name]
         else:
             print("Starting server locally...")
             command = ["node", "dist/index.js"]
