@@ -5,8 +5,13 @@ on:
     - cron: "17 4 * * 1"
   workflow_dispatch:
 
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
 env:
@@ -88,33 +93,38 @@ jobs:
             --head "${SYNC_BRANCH}" \
             --state open \
             --json url \
-            --jq '.[0].url')"
+            --jq '.[0].url // empty')"
 
           if [ -n "${PR_URL}" ]; then
             echo "Existing sync PR: ${PR_URL}"
             exit 0
           fi
 
+          PR_BODY="$(cat <<'EOF'
+          ## What this PR does
+
+          This automated PR merges the latest changes from `whit3rabbit/camoufox-mcp` into this fork.
+
+          ## Safety
+
+          - Upstream changes are never pushed directly to `main`
+          - Your existing CI runs on this PR before anything is merged
+          - Docker publishing still only happens after this PR is merged into `main`
+
+          ## What to review
+
+          - Check whether upstream touched files we customized for Docker and remote MCP hosting
+          - Verify CI is green
+          - Merge only if the changes look safe
+          EOF
+          )"
+
           gh pr create \
             --repo "${GITHUB_REPOSITORY}" \
             --base main \
             --head "${SYNC_BRANCH}" \
             --title "Sync upstream changes from whit3rabbit/camoufox-mcp" \
-            --body "## What this PR does
-
-This automated PR merges the latest changes from \`whit3rabbit/camoufox-mcp\` into this fork.
-
-## Safety
-
-- Upstream changes are never pushed directly to \`main\`
-- Your existing CI runs on this PR before anything is merged
-- Docker publishing still only happens after this PR is merged into \`main\`
-
-## What to review
-
-- Check whether upstream touched files we customized for Docker and remote MCP hosting
-- Verify CI is green
-- Merge only if the changes look safe"
+            --body "${PR_BODY}"
 
       - name: Create conflict issue
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outcome == 'failure'
@@ -123,27 +133,32 @@ This automated PR merges the latest changes from \`whit3rabbit/camoufox-mcp\` in
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          ISSUE_URL="$(gh issue list \
+          ISSUE_NUMBER="$(gh issue list \
             --repo "${GITHUB_REPOSITORY}" \
             --state open \
             --search "in:title Upstream sync requires manual conflict resolution" \
-            --json url \
-            --jq '.[] | select(.url != null) | .url' | head -n 1)"
+            --json number \
+            --jq '.[0].number // empty')"
 
-          if [ -n "${ISSUE_URL}" ]; then
+          if [ -n "${ISSUE_NUMBER}" ]; then
             gh issue comment \
               --repo "${GITHUB_REPOSITORY}" \
-              "${ISSUE_URL}" \
+              "${ISSUE_NUMBER}" \
               --body "Another upstream sync attempt hit a merge conflict. Please merge \`upstream/main\` manually into \`main\`."
             exit 0
           fi
 
+          ISSUE_BODY="$(cat <<'EOF'
+          The automated upstream sync workflow detected new commits in `whit3rabbit/camoufox-mcp`, but the merge into this fork conflicted.
+
+          Please merge `upstream/main` into `main` manually and resolve the conflict before the next sync run.
+          EOF
+          )"
+
           gh issue create \
             --repo "${GITHUB_REPOSITORY}" \
             --title "Upstream sync requires manual conflict resolution" \
-            --body "The automated upstream sync workflow detected new commits in \`whit3rabbit/camoufox-mcp\`, but the merge into this fork conflicted.
-
-Please merge \`upstream/main\` into \`main\` manually and resolve the conflict before the next sync run."
+            --body "${ISSUE_BODY}"
 
       - name: Fail workflow on merge conflict
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outcome == 'failure'
