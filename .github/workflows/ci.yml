@@ -10,8 +10,8 @@ on:
   workflow_dispatch:
 
 env:
-  DOCKER_REPO: followthewhit3rabbit/camoufox-mcp
-  GHCR_REPO: ghcr.io/${{ github.repository_owner }}/camoufox-mcp
+  DOCKER_REPO: piefkepaul/camoufox-mcp-docker
+  GHCR_REPO: ghcr.io/${{ github.repository_owner }}/camoufox-mcp-docker
 
 jobs:
   test:
@@ -98,8 +98,8 @@ jobs:
       if: github.event_name != 'pull_request'
       uses: docker/login-action@v3
       with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+        username: piefkepaul
+        password: ${{ secrets.DOCKER_PASSWORD }}
     
     - name: Log in to GitHub Container Registry
       if: github.event_name != 'pull_request'

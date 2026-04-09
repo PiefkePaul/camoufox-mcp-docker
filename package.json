@@ -26,12 +26,12 @@
     ],
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/PiefkePaul/camoufox-mcp.git"
+        "url": "git+https://github.com/PiefkePaul/camoufox-mcp-docker.git"
     },
     "bugs": {
-        "url": "https://github.com/PiefkePaul/camoufox-mcp/issues"
+        "url": "https://github.com/PiefkePaul/camoufox-mcp-docker/issues"
     },
-    "homepage": "https://github.com/PiefkePaul/camoufox-mcp#readme",
+    "homepage": "https://github.com/PiefkePaul/camoufox-mcp-docker#readme",
     "engines": {
         "node": ">=18.0.0"
     },
