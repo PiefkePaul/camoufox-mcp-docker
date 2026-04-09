@@ -2,14 +2,14 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import chalk from "chalk";
 
-import { loadConfig } from "./config.js";
+import { type AppConfig, loadConfig } from "./config.js";
 import { createCamoufoxServer } from "./createServer.js";
 import { startHttpServer } from "./httpServer.js";
 
 type ShutdownHandler = () => Promise<void>;
 
-async function startStdioServer(): Promise<ShutdownHandler> {
-  const server = createCamoufoxServer();
+async function startStdioServer(config: AppConfig): Promise<ShutdownHandler> {
+  const server = createCamoufoxServer({ debugLocale: config.debugLocale });
   const transport = new StdioServerTransport();
 
   await server.connect(transport);
@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   const shutdown =
     config.transport === "http"
       ? (await startHttpServer(config)).close
-      : await startStdioServer();
+      : await startStdioServer(config);
 
   let closing = false;
   const stop = async (reason: string, exitCode = 0) => {

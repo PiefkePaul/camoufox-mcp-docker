@@ -111,12 +111,14 @@ The server can be configured through environment variables or CLI flags.
 | `MCP_HEALTH_PATH` | `/health` | Health endpoint path |
 | `MCP_ENABLE_JSON_RESPONSE` | `true` | Enables JSON responses for compatible MCP clients |
 | `MCP_HTTP_SESSION_MODE` | `stateless` | HTTP session mode: `stateless` for ChatGPT/most remote clients, `stateful` only if a client requires persistent MCP sessions |
+| `MCP_DEBUG_LOCALE` | `false` | Logs requested and effective browser locale data for each `browse` call |
 | `MCP_AUTH_TOKEN` | unset | Optional Bearer token for clients that can send static auth headers |
 
 CLI examples:
 
 ```bash
 node dist/index.js --transport http --host 0.0.0.0 --port 3000 --http-session-mode stateless
+node dist/index.js --transport http --debug-locale true
 node dist/index.js --transport stdio
 ```
 
@@ -288,6 +290,24 @@ MCP_HTTP_SESSION_MODE=stateless
 ```
 
 Only use `stateful` if you know your client requires persistent MCP sessions and reliably sends `mcp-session-id` on all follow-up requests.
+
+### Debugging locale mismatches
+
+If a client claims it sent `de-DE` or `fr-FR`, but the page reports something else, enable:
+
+```bash
+MCP_DEBUG_LOCALE=true
+```
+
+Each `browse` call will then log:
+
+- the raw `locale` value received by the MCP tool
+- the effective `navigator.language`
+- the effective `navigator.languages`
+- the resolved `Intl.DateTimeFormat().resolvedOptions().locale`
+- the page `<html lang>` value when present
+
+That makes it much easier to tell whether the mismatch comes from the client request or from Camoufox/browser internals.
 
 ## License
 

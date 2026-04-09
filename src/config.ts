@@ -10,6 +10,7 @@ export interface AppConfig {
   authToken?: string;
   enableJsonResponse: boolean;
   httpSessionMode: HttpSessionMode;
+  debugLocale: boolean;
 }
 
 type CliValue = string | boolean;
@@ -145,6 +146,10 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env): App
     ),
     httpSessionMode: normalizeHttpSessionMode(
       (args.get("http-session-mode") as string | undefined) ?? env.MCP_HTTP_SESSION_MODE,
+    ),
+    debugLocale: parseBoolean(
+      (args.get("debug-locale") as string | boolean | undefined) ?? env.MCP_DEBUG_LOCALE,
+      false,
     ),
   };
 }

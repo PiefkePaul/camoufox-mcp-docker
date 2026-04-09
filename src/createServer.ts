@@ -23,7 +23,11 @@ interface CamoufoxOptions {
   args?: string[];
 }
 
-export function createCamoufoxServer(): McpServer {
+interface CreateCamoufoxServerOptions {
+  debugLocale?: boolean;
+}
+
+export function createCamoufoxServer(options: CreateCamoufoxServerOptions = {}): McpServer {
   const server = new McpServer({
     name: "camoufox-mcp-server",
     version: "1.5.0",
@@ -176,6 +180,17 @@ export function createCamoufoxServer(): McpServer {
 
       try {
         console.error(chalk.blue(`[Camoufox] Launching browser to browse: ${url}`));
+        if (options.debugLocale) {
+          console.error(
+            chalk.magenta(
+              `[Camoufox] Locale debug input: ${JSON.stringify({
+                requestedLocale: locale ?? null,
+                geoip,
+                os: os ?? null,
+              })}`,
+            ),
+          );
+        }
 
         const isLinux = process.platform === "linux";
         const headlessMode = headless !== undefined ? headless : isLinux ? "virtual" : true;
@@ -210,6 +225,36 @@ export function createCamoufoxServer(): McpServer {
 
         const page = await browser.newPage();
         await page.goto(url, { waitUntil: waitStrategy, timeout });
+
+        if (options.debugLocale) {
+          try {
+            const localeSnapshot = await page.evaluate(() => ({
+              navigatorLanguage: navigator.language,
+              navigatorLanguages: navigator.languages,
+              intlLocale: Intl.DateTimeFormat().resolvedOptions().locale,
+              htmlLang: document.documentElement?.lang ?? null,
+            }));
+
+            console.error(
+              chalk.magenta(
+                `[Camoufox] Locale debug effective: ${JSON.stringify({
+                  requestedLocale: locale ?? null,
+                  ...localeSnapshot,
+                })}`,
+              ),
+            );
+          } catch (localeDebugError) {
+            console.error(
+              chalk.yellow(
+                `[Camoufox] Locale debug failed: ${
+                  localeDebugError instanceof Error
+                    ? localeDebugError.message
+                    : String(localeDebugError)
+                }`,
+              ),
+            );
+          }
+        }
 
         const pageContent = await page.content();
 
