@@ -257,6 +257,21 @@ Check:
 
 That is expected in many setups. Their first-party remote connector flows are centered around no-auth or OAuth-based server onboarding, not arbitrary static Bearer headers.
 
+### ChatGPT says the `browse` schema is invalid
+
+If ChatGPT rejects the connector with an error mentioning `window` and `items`, you are most likely running an older image that still exposes `window` as a tuple array.
+
+Use the updated image and pass `window` like this:
+
+```json
+{
+  "window": {
+    "width": 1280,
+    "height": 720
+  }
+}
+```
+
 ## License
 
 MIT License. See `LICENSE`.

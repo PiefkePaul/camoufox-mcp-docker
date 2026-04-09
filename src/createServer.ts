@@ -110,19 +110,13 @@ export function createCamoufoxServer(): McpServer {
         .optional()
         .describe("List of default addons to exclude (e.g., ['ublock_origin'])."),
       window: z
-        .preprocess(
-          (argument) => {
-            if (Array.isArray(argument) && argument.length === 0) {
-              return undefined;
-            }
-            return argument;
-          },
-          z
-            .tuple([z.number().min(320).max(3840), z.number().min(240).max(2160)])
-            .optional(),
-        )
+        .object({
+          width: z.number().min(320).max(3840),
+          height: z.number().min(240).max(2160),
+        })
+        .optional()
         .describe(
-          "Set fixed window size [width, height] instead of random generation. An empty array [] is accepted and treated as if the window parameter was not specified.",
+          "Set a fixed browser window size using an object like { width: 1280, height: 720 } instead of random generation.",
         ),
       args: z.array(z.string()).optional().describe("Additional command-line arguments to pass to the browser."),
       block_images: z
@@ -210,7 +204,7 @@ export function createCamoufoxServer(): McpServer {
           enable_cache,
           firefox_user_prefs,
           exclude_addons,
-          window,
+          window: window ? [window.width, window.height] : undefined,
           args,
         } as CamoufoxOptions);
 
