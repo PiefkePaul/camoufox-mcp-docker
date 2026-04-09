@@ -12,6 +12,7 @@ on:
 env:
   DOCKER_REPO: piefkepaul/camoufox-mcp-docker
   GHCR_REPO: ghcr.io/${{ github.repository_owner }}/camoufox-mcp-docker
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
@@ -128,7 +129,7 @@ jobs:
       uses: docker/build-push-action@v5
       with:
         context: .
-        platforms: linux/amd64,linux/arm64
+        platforms: linux/amd64
         push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
