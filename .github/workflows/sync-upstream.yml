@@ -1,0 +1,152 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPO: https://github.com/whit3rabbit/camoufox-mcp.git
+  UPSTREAM_BRANCH: main
+  SYNC_BRANCH: automation/upstream-sync
+
+jobs:
+  sync:
+    name: Sync with upstream repository
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out fork main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream main
+        run: |
+          git remote add upstream "${UPSTREAM_REPO}" || git remote set-url upstream "${UPSTREAM_REPO}"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+
+      - name: Check if upstream has new commits
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          AHEAD_COUNT="$(git rev-list --count HEAD..upstream/${UPSTREAM_BRANCH})"
+          echo "ahead_count=${AHEAD_COUNT}" >> "${GITHUB_OUTPUT}"
+          if [ "${AHEAD_COUNT}" -eq 0 ]; then
+            echo "has_updates=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_updates=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Stop when nothing changed upstream
+        if: steps.check.outputs.has_updates == 'false'
+        run: echo "No upstream updates to sync."
+
+      - name: Prepare sync branch
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          git checkout -B "${SYNC_BRANCH}" origin/main
+
+      - name: Merge upstream into sync branch
+        if: steps.check.outputs.has_updates == 'true'
+        id: merge
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git merge --no-ff --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+            git merge --abort || true
+            exit 1
+          fi
+
+      - name: Push sync branch
+        if: steps.check.outputs.has_updates == 'true' && steps.merge.outcome == 'success'
+        run: |
+          git push --force-with-lease origin "${SYNC_BRANCH}"
+
+      - name: Create or update pull request
+        if: steps.check.outputs.has_updates == 'true' && steps.merge.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR_URL="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base main \
+            --head "${SYNC_BRANCH}" \
+            --state open \
+            --json url \
+            --jq '.[0].url')"
+
+          if [ -n "${PR_URL}" ]; then
+            echo "Existing sync PR: ${PR_URL}"
+            exit 0
+          fi
+
+          gh pr create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base main \
+            --head "${SYNC_BRANCH}" \
+            --title "Sync upstream changes from whit3rabbit/camoufox-mcp" \
+            --body "## What this PR does
+
+This automated PR merges the latest changes from \`whit3rabbit/camoufox-mcp\` into this fork.
+
+## Safety
+
+- Upstream changes are never pushed directly to \`main\`
+- Your existing CI runs on this PR before anything is merged
+- Docker publishing still only happens after this PR is merged into \`main\`
+
+## What to review
+
+- Check whether upstream touched files we customized for Docker and remote MCP hosting
+- Verify CI is green
+- Merge only if the changes look safe"
+
+      - name: Create conflict issue
+        if: steps.check.outputs.has_updates == 'true' && steps.merge.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ISSUE_URL="$(gh issue list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --state open \
+            --search "in:title Upstream sync requires manual conflict resolution" \
+            --json url \
+            --jq '.[] | select(.url != null) | .url' | head -n 1)"
+
+          if [ -n "${ISSUE_URL}" ]; then
+            gh issue comment \
+              --repo "${GITHUB_REPOSITORY}" \
+              "${ISSUE_URL}" \
+              --body "Another upstream sync attempt hit a merge conflict. Please merge \`upstream/main\` manually into \`main\`."
+            exit 0
+          fi
+
+          gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Upstream sync requires manual conflict resolution" \
+            --body "The automated upstream sync workflow detected new commits in \`whit3rabbit/camoufox-mcp\`, but the merge into this fork conflicted.
+
+Please merge \`upstream/main\` into \`main\` manually and resolve the conflict before the next sync run."
+
+      - name: Fail workflow on merge conflict
+        if: steps.check.outputs.has_updates == 'true' && steps.merge.outcome == 'failure'
+        run: |
+          echo "Upstream sync hit merge conflicts."
+          exit 1
