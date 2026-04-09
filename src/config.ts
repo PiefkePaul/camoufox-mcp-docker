@@ -1,4 +1,5 @@
 export type ServerTransportMode = "stdio" | "http";
+export type HttpSessionMode = "stateful" | "stateless";
 
 export interface AppConfig {
   transport: ServerTransportMode;
@@ -8,6 +9,7 @@ export interface AppConfig {
   healthPath: string;
   authToken?: string;
   enableJsonResponse: boolean;
+  httpSessionMode: HttpSessionMode;
 }
 
 type CliValue = string | boolean;
@@ -96,6 +98,10 @@ function normalizeTransport(value: string | undefined): ServerTransportMode {
   return value?.trim().toLowerCase() === "http" ? "http" : "stdio";
 }
 
+function normalizeHttpSessionMode(value: string | undefined): HttpSessionMode {
+  return value?.trim().toLowerCase() === "stateful" ? "stateful" : "stateless";
+}
+
 export function loadConfig(argv = process.argv.slice(2), env = process.env): AppConfig {
   const args = parseCliArgs(argv);
 
@@ -136,6 +142,9 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env): App
     enableJsonResponse: parseBoolean(
       explicitJsonResponse ?? env.MCP_ENABLE_JSON_RESPONSE,
       true,
+    ),
+    httpSessionMode: normalizeHttpSessionMode(
+      (args.get("http-session-mode") as string | undefined) ?? env.MCP_HTTP_SESSION_MODE,
     ),
   };
 }

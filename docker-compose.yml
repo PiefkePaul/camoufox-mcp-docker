@@ -14,6 +14,7 @@ services:
       MCP_PATH: ${MCP_PATH:-/mcp}
       MCP_HEALTH_PATH: ${MCP_HEALTH_PATH:-/health}
       MCP_ENABLE_JSON_RESPONSE: ${MCP_ENABLE_JSON_RESPONSE:-true}
+      MCP_HTTP_SESSION_MODE: ${MCP_HTTP_SESSION_MODE:-stateless}
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-change-me}
     shm_size: "1gb"
     security_opt:

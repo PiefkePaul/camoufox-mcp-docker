@@ -28,6 +28,11 @@ function sendJsonRpcError(res: Response, status: number, code: number, message: 
   });
 }
 
+function sendMethodNotAllowed(res: Response, allow: string): void {
+  res.set("Allow", allow);
+  sendJsonRpcError(res, 405, -32000, "Method not allowed.");
+}
+
 function compareToken(expected: string, provided: string): boolean {
   const expectedBuffer = Buffer.from(expected);
   const providedBuffer = Buffer.from(provided);
@@ -78,6 +83,7 @@ export async function startHttpServer(config: AppConfig): Promise<HttpServerHand
       },
       auth: config.authToken ? "bearer" : "none",
       jsonResponse: config.enableJsonResponse,
+      sessionMode: config.httpSessionMode,
     });
   });
 
@@ -85,6 +91,7 @@ export async function startHttpServer(config: AppConfig): Promise<HttpServerHand
     res.json({
       status: "ok",
       transport: "http",
+      sessionMode: config.httpSessionMode,
     });
   });
 
@@ -111,7 +118,9 @@ export async function startHttpServer(config: AppConfig): Promise<HttpServerHand
   app.use(config.mcpPath, requireAuth);
 
   app.options(config.mcpPath, (_req, res) => {
-    res.set("Allow", "GET, POST, DELETE, OPTIONS").status(204).end();
+    const allowHeader =
+      config.httpSessionMode === "stateful" ? "GET, POST, DELETE, OPTIONS" : "POST, OPTIONS";
+    res.set("Allow", allowHeader).status(204).end();
   });
 
   async function cleanupSession(sessionId: string | undefined): Promise<void> {
@@ -148,6 +157,46 @@ export async function startHttpServer(config: AppConfig): Promise<HttpServerHand
     return { server, transport };
   }
 
+  async function handleStatelessPost(req: Request, res: Response): Promise<void> {
+    const server = createCamoufoxServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: config.enableJsonResponse,
+    });
+
+    let closed = false;
+    const cleanup = async () => {
+      if (closed) {
+        return;
+      }
+
+      closed = true;
+
+      try {
+        await transport.close();
+      } catch (error) {
+        console.error(chalk.yellow("[Camoufox] Error closing stateless HTTP transport:"), error);
+      }
+
+      try {
+        await server.close();
+      } catch (error) {
+        console.error(chalk.yellow("[Camoufox] Error closing stateless MCP server:"), error);
+      }
+    };
+
+    res.once("finish", () => {
+      void cleanup();
+    });
+
+    res.once("close", () => {
+      void cleanup();
+    });
+
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  }
+
   function requireExistingSession(req: Request, res: Response): SessionContext | undefined {
     const sessionId = req.header("mcp-session-id");
     if (!sessionId) {
@@ -166,6 +215,11 @@ export async function startHttpServer(config: AppConfig): Promise<HttpServerHand
 
   app.post(config.mcpPath, async (req, res) => {
     try {
+      if (config.httpSessionMode === "stateless") {
+        await handleStatelessPost(req, res);
+        return;
+      }
+
       const sessionId = req.header("mcp-session-id");
       if (sessionId) {
         const existingSession = sessions.get(sessionId);
@@ -194,6 +248,11 @@ export async function startHttpServer(config: AppConfig): Promise<HttpServerHand
   });
 
   app.get(config.mcpPath, async (req, res) => {
+    if (config.httpSessionMode === "stateless") {
+      sendMethodNotAllowed(res, "POST, OPTIONS");
+      return;
+    }
+
     const session = requireExistingSession(req, res);
     if (!session) {
       return;
@@ -210,6 +269,11 @@ export async function startHttpServer(config: AppConfig): Promise<HttpServerHand
   });
 
   app.delete(config.mcpPath, async (req, res) => {
+    if (config.httpSessionMode === "stateless") {
+      sendMethodNotAllowed(res, "POST, OPTIONS");
+      return;
+    }
+
     const session = requireExistingSession(req, res);
     if (!session) {
       return;
@@ -232,7 +296,7 @@ export async function startHttpServer(config: AppConfig): Promise<HttpServerHand
 
   console.error(
     chalk.yellow(
-      `[Camoufox] HTTP MCP server listening on http://${config.host}:${config.port}${config.mcpPath}`,
+      `[Camoufox] HTTP MCP server listening on http://${config.host}:${config.port}${config.mcpPath} (${config.httpSessionMode} sessions)`,
     ),
   );
 

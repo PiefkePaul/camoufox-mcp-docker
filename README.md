@@ -9,7 +9,7 @@ It keeps the original `browse` tool, but adds a network-facing HTTP mode, a heal
 - Added dual transport support:
   - `stdio` for local desktop clients
   - `http` for remote MCP clients and container deployments
-- Added MCP HTTP endpoint with session support at `/mcp`
+- Added MCP HTTP endpoint at `/mcp` with stateless mode by default and optional stateful sessions
 - Added health endpoint at `/health`
 - Added optional Bearer token protection with `MCP_AUTH_TOKEN`
 - Reworked the Docker image for long-running NAS usage
@@ -75,6 +75,7 @@ services:
       MCP_PORT: 3000
       MCP_PATH: /mcp
       MCP_HEALTH_PATH: /health
+      MCP_HTTP_SESSION_MODE: stateless
 ```
 
 ### Plain Docker
@@ -109,12 +110,13 @@ The server can be configured through environment variables or CLI flags.
 | `MCP_PATH` | `/mcp` | MCP endpoint path |
 | `MCP_HEALTH_PATH` | `/health` | Health endpoint path |
 | `MCP_ENABLE_JSON_RESPONSE` | `true` | Enables JSON responses for compatible MCP clients |
+| `MCP_HTTP_SESSION_MODE` | `stateless` | HTTP session mode: `stateless` for ChatGPT/most remote clients, `stateful` only if a client requires persistent MCP sessions |
 | `MCP_AUTH_TOKEN` | unset | Optional Bearer token for clients that can send static auth headers |
 
 CLI examples:
 
 ```bash
-node dist/index.js --transport http --host 0.0.0.0 --port 3000
+node dist/index.js --transport http --host 0.0.0.0 --port 3000 --http-session-mode stateless
 node dist/index.js --transport stdio
 ```
 
@@ -146,9 +148,10 @@ If you place the service behind Nginx, Caddy, Traefik, Synology reverse proxy, o
 
 - Expose the MCP endpoint over HTTPS
 - Forward `Authorization` headers unchanged if you use `MCP_AUTH_TOKEN`
-- Forward `mcp-session-id` headers unchanged
+- If you run `MCP_HTTP_SESSION_MODE=stateful`, forward `mcp-session-id` headers unchanged
 - Do not buffer streaming responses on the MCP endpoint
-- Forward `GET`, `POST`, and `DELETE` requests to the same MCP path
+- In `stateless` mode, forwarding `POST` is enough
+- In `stateful` mode, forward `GET`, `POST`, and `DELETE` to the same MCP path
 
 If you are targeting Claude remote connectors, remember that Anthropic connects from its own cloud infrastructure. Your public endpoint must be reachable from there.
 
@@ -271,6 +274,20 @@ Use the updated image and pass `window` like this:
   }
 }
 ```
+
+### ChatGPT or another remote client works once, then the tool disappears
+
+That usually points to session handling on the remote client side rather than the browser automation itself.
+
+This fork now defaults HTTP mode to `MCP_HTTP_SESSION_MODE=stateless`, which is the safest setting for ChatGPT-style remote MCP connectors.
+
+If you previously deployed an older image or explicitly set stateful mode, switch back to:
+
+```bash
+MCP_HTTP_SESSION_MODE=stateless
+```
+
+Only use `stateful` if you know your client requires persistent MCP sessions and reliably sends `mcp-session-id` on all follow-up requests.
 
 ## License
 
