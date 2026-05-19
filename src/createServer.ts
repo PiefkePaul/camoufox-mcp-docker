@@ -1,334 +1,141 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import chalk from "chalk";
-import { Camoufox } from "camoufox-js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-interface CamoufoxOptions {
-  os?: string[];
-  headless?: boolean | "virtual";
-  humanize?: boolean;
-  geoip?: boolean;
-  ublock?: boolean;
-  block_webgl?: boolean;
-  block_images?: boolean;
-  block_webrtc?: boolean;
-  disable_coop?: boolean;
-  locale?: string;
-  viewport?: { width: number; height: number };
-  proxy?: string | { server: string; username?: string; password?: string };
-  enable_cache?: boolean;
-  firefox_user_prefs?: Record<string, unknown>;
-  exclude_addons?: string[];
-  window?: [number, number];
-  args?: string[];
-}
+import { SERVER_VERSION } from "./config.js";
+import {
+  anyOutputSchema,
+  browseToolShape,
+  consoleToolShape,
+  findOutputSchema,
+  findToolShape,
+  formsOutputSchema,
+  formsToolShape,
+  linksOutputSchema,
+  linksToolShape,
+  networkSummaryOutputSchema,
+  networkSummaryToolShape,
+  outlineOutputSchema,
+  outlineToolShape,
+  screenshotToolShape,
+  sequenceToolShape,
+  sessionActionToolShape,
+  sessionCloseToolShape,
+  sessionNavigateToolShape,
+  sessionResumeToolShape,
+  sessionSnapshotToolShape,
+  sessionStartToolShape,
+  snapshotToolShape,
+  statusOutputSchema,
+  type BrowseToolInput,
+  type ConsoleToolInput,
+  type FindToolInput,
+  type FormsToolInput,
+  type LinksToolInput,
+  type NetworkSummaryToolInput,
+  type OutlineToolInput,
+  type ScreenshotToolInput,
+  type SequenceToolInput,
+  type SessionActionToolInput,
+  type SessionCloseToolInput,
+  type SessionNavigateToolInput,
+  type SessionResumeToolInput,
+  type SessionSnapshotToolInput,
+  type SessionStartToolInput,
+  type SnapshotToolInput,
+} from "./schemas.js";
+import {
+  handleBrowse,
+  handleConsole,
+  handleFind,
+  handleForms,
+  handleLinks,
+  handleNetworkSummary,
+  handleOutline,
+  handleScreenshot,
+  handleSequence,
+  handleSnapshot,
+  handleStatus,
+} from "./tool-handlers.js";
+import {
+  handleSessionAction,
+  handleSessionClose,
+  handleSessionNavigate,
+  handleSessionResume,
+  handleSessionSnapshot,
+  handleSessionStart,
+} from "./sessions.js";
 
-interface CreateCamoufoxServerOptions {
-  debugLocale?: boolean;
-}
+const readOnlyOpenWorld: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true,
+};
+const nonReadOnlyOpenWorld: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true,
+};
 
-export function createCamoufoxServer(options: CreateCamoufoxServerOptions = {}): McpServer {
-  const server = new McpServer({
-    name: "camoufox-mcp-server",
-    version: "1.5.0",
-  });
-
-  server.tool(
-    "browse",
-    {
-      url: z
-        .string()
-        .describe(
-          "The URL to navigate to and retrieve content from. Use this tool when users ask to visit, check, search, navigate, browse, fetch, or scrape websites. Must be a fully qualified URL (e.g., 'https://example.com').",
-        ),
-      os: z
-        .enum(["windows", "macos", "linux"])
-        .optional()
-        .describe(
-          "Optional OS to spoof. Can be 'windows', 'macos', or 'linux'. If not specified, will rotate between all OS types.",
-        ),
-      waitStrategy: z
-        .enum(["domcontentloaded", "load", "networkidle"])
-        .optional()
-        .default("domcontentloaded")
-        .describe(
-          "Wait strategy for page load. 'domcontentloaded' waits for DOM, 'load' waits for all resources, 'networkidle' waits for network activity to finish.",
-        ),
-      timeout: z
-        .number()
-        .min(5000)
-        .max(300000)
-        .optional()
-        .default(60000)
-        .describe("Timeout in milliseconds for page load (5-300 seconds)."),
-      humanize: z
-        .boolean()
-        .optional()
-        .default(true)
-        .describe(
-          "Enable realistic cursor movements and human-like behavior for better stealth and anti-detection. Helps avoid bot detection by simulating natural user interactions.",
-        ),
-      locale: z.string().optional().describe("Browser locale (e.g., 'en-US', 'fr-FR')."),
-      viewport: z
-        .object({
-          width: z.number().min(320).max(3840).default(1920),
-          height: z.number().min(240).max(2160).default(1080),
-        })
-        .optional()
-        .describe("Custom viewport dimensions."),
-      screenshot: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe(
-          "Capture a screenshot/image of the page after loading. Use when users ask to take a screenshot, capture an image, show them visually, or want to see how the page looks.",
-        ),
-      block_webrtc: z
-        .boolean()
-        .optional()
-        .default(true)
-        .describe(
-          "Block WebRTC entirely for enhanced privacy and stealth. Use when users want private browsing, to hide their real IP, prevent WebRTC leaks, or browse in stealth mode.",
-        ),
-      proxy: z
-        .union([
-          z.string().describe("Proxy URL (e.g., 'http://proxy.example.com:8080')"),
-          z.object({
-            server: z.string().describe("Proxy server URL"),
-            username: z.string().optional().describe("Proxy username for authentication"),
-            password: z.string().optional().describe("Proxy password for authentication"),
-          }),
-        ])
-        .optional()
-        .describe(
-          "Proxy configuration for anonymous browsing. Use when users want to browse through a proxy, hide their IP, browse anonymously, or access content via a specific server location.",
-        ),
-      enable_cache: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe("Cache pages, requests, etc. Uses more memory but improves performance when revisiting pages."),
-      firefox_user_prefs: z.record(z.any()).optional().describe("Custom Firefox user preferences to set."),
-      exclude_addons: z
-        .array(z.string())
-        .optional()
-        .describe("List of default addons to exclude (e.g., ['ublock_origin'])."),
-      window: z
-        .object({
-          width: z.number().min(320).max(3840),
-          height: z.number().min(240).max(2160),
-        })
-        .optional()
-        .describe(
-          "Set a fixed browser window size using an object like { width: 1280, height: 720 } instead of random generation.",
-        ),
-      args: z.array(z.string()).optional().describe("Additional command-line arguments to pass to the browser."),
-      block_images: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe(
-          "Block all images for faster loading, reduced bandwidth, and lightweight browsing. Use when users want quick/fast browsing, text-only content, or to save bandwidth.",
-        ),
-      block_webgl: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe(
-          "Block WebGL to prevent fingerprinting and tracking. Use for maximum privacy/stealth mode, but note it may cause detection on some sites that rely heavily on WebGL.",
-        ),
-      disable_coop: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe(
-          "Disable Cross-Origin-Opener-Policy to allow interaction with iframes and cross-origin content. Use when users need to click elements in iframes or access embedded content.",
-        ),
-      geoip: z
-        .boolean()
-        .optional()
-        .default(true)
-        .describe("Automatically detect geolocation based on IP address."),
-      headless: z
-        .boolean()
-        .optional()
-        .describe("Run browser in headless mode. Auto-detects best mode for environment if not specified."),
+function registerJsonTool<InputArgs extends z.ZodRawShape>(
+  server: McpServer,
+  name: string,
+  description: string,
+  inputSchema: InputArgs,
+  annotations: ToolAnnotations,
+  handler: (input: z.infer<z.ZodObject<InputArgs>>) => Promise<unknown>,
+  outputSchema: z.ZodTypeAny = anyOutputSchema,
+): void {
+  const registerTool = server.registerTool.bind(server) as unknown as (
+    toolName: string,
+    config: {
+      description: string;
+      inputSchema: InputArgs;
+      outputSchema: z.ZodTypeAny;
+      annotations: ToolAnnotations;
     },
-    async ({
-      url,
-      os,
-      waitStrategy,
-      timeout,
-      humanize,
-      locale,
-      viewport,
-      screenshot,
-      block_webrtc,
-      proxy,
-      enable_cache,
-      firefox_user_prefs,
-      exclude_addons,
-      window,
-      args,
-      block_images,
-      block_webgl,
-      disable_coop,
-      geoip,
-      headless,
-    }) => {
-      let browser;
+    callback: (input: unknown) => Promise<unknown>,
+  ) => void;
 
-      try {
-        console.error(chalk.blue(`[Camoufox] Launching browser to browse: ${url}`));
-        if (options.debugLocale) {
-          console.error(
-            chalk.magenta(
-              `[Camoufox] Locale debug input: ${JSON.stringify({
-                requestedLocale: locale ?? null,
-                geoip,
-                os: os ?? null,
-              })}`,
-            ),
-          );
-        }
-
-        const isLinux = process.platform === "linux";
-        const headlessMode = headless !== undefined ? headless : isLinux ? "virtual" : true;
-
-        const osOptions = ["windows", "macos", "linux"];
-        const selectedOS = os || osOptions[Math.floor(Math.random() * osOptions.length)];
-
-        browser = await Camoufox({
-          os: [selectedOS],
-          headless: headlessMode,
-          humanize,
-          geoip,
-          ublock: true,
-          block_webgl,
-          block_images,
-          block_webrtc,
-          disable_coop,
-          locale,
-          viewport: viewport
-            ? {
-                width: viewport.width,
-                height: viewport.height,
-              }
-            : undefined,
-          proxy,
-          enable_cache,
-          firefox_user_prefs,
-          exclude_addons,
-          window: window ? [window.width, window.height] : undefined,
-          args,
-        } as CamoufoxOptions);
-
-        const page = await browser.newPage();
-        await page.goto(url, { waitUntil: waitStrategy, timeout });
-
-        if (options.debugLocale) {
-          try {
-            const localeSnapshot = await page.evaluate(() => ({
-              navigatorLanguage: navigator.language,
-              navigatorLanguages: navigator.languages,
-              intlLocale: Intl.DateTimeFormat().resolvedOptions().locale,
-              htmlLang: document.documentElement?.lang ?? null,
-            }));
-
-            console.error(
-              chalk.magenta(
-                `[Camoufox] Locale debug effective: ${JSON.stringify({
-                  requestedLocale: locale ?? null,
-                  ...localeSnapshot,
-                })}`,
-              ),
-            );
-          } catch (localeDebugError) {
-            console.error(
-              chalk.yellow(
-                `[Camoufox] Locale debug failed: ${
-                  localeDebugError instanceof Error
-                    ? localeDebugError.message
-                    : String(localeDebugError)
-                }`,
-              ),
-            );
-          }
-        }
-
-        const pageContent = await page.content();
-
-        let screenshotBase64: string | undefined;
-        if (screenshot) {
-          try {
-            const screenshotBuffer = await page.screenshot({ type: "png" });
-            screenshotBase64 = screenshotBuffer.toString("base64");
-            console.error(chalk.green(`[Camoufox] Screenshot captured for ${url}.`));
-          } catch (screenshotError) {
-            console.error(
-              chalk.yellow(
-                `[Camoufox] Screenshot failed: ${
-                  screenshotError instanceof Error ? screenshotError.message : String(screenshotError)
-                }`,
-              ),
-            );
-          }
-        }
-
-        const features = [
-          `OS: ${selectedOS}`,
-          `wait: ${waitStrategy}`,
-          proxy ? "proxy: enabled" : null,
-          block_webrtc ? "WebRTC: blocked" : null,
-          block_images ? "images: blocked" : null,
-          block_webgl ? "WebGL: blocked" : null,
-          disable_coop ? "COOP: disabled" : null,
-          !geoip ? "geoip: disabled" : null,
-        ]
-          .filter(Boolean)
-          .join(", ");
-
-        console.error(chalk.green(`[Camoufox] Successfully retrieved content from ${url} (${features}).`));
-
-        const content: Array<
-          { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
-        > = [
-          {
-            type: "text",
-            text: pageContent,
-          },
-        ];
-
-        if (screenshotBase64) {
-          content.push({
-            type: "image",
-            data: screenshotBase64,
-            mimeType: "image/png",
-          });
-        }
-
-        return { content };
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(chalk.red(`[Camoufox] Error during browsing: ${errorMessage}`));
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to browse URL ${url}. Error: ${errorMessage}`,
-            },
-          ],
-          isError: true,
-        };
-      } finally {
-        if (browser) {
-          console.error(chalk.blue("[Camoufox] Closing browser."));
-          await browser.close();
-        }
-      }
-    },
+  registerTool(
+    name,
+    { description, inputSchema, outputSchema, annotations },
+    async (input: unknown): Promise<unknown> => handler(input as z.infer<z.ZodObject<InputArgs>>),
   );
+}
+
+export function createCamoufoxServer(): McpServer {
+  const server = new McpServer({ name: "camoufox-mcp-server", version: SERVER_VERSION });
+
+  server.registerTool(
+    "camoufox_status",
+    {
+      description: "Return server, browser, queue, session, and policy status without launching a page.",
+      inputSchema: {},
+      outputSchema: statusOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async () => handleStatus(),
+  );
+
+  registerJsonTool(server, "browse", "Navigate once and return bounded page content.", browseToolShape, readOnlyOpenWorld, async (input) => handleBrowse(input as BrowseToolInput));
+  registerJsonTool(server, "browse_snapshot", "Navigate once and return visible text, ARIA snapshot, and interactive metadata.", snapshotToolShape, readOnlyOpenWorld, async (input) => handleSnapshot(input as SnapshotToolInput));
+  registerJsonTool(server, "browse_sequence", "Navigate once, run bounded selector actions, then return final state.", sequenceToolShape, nonReadOnlyOpenWorld, async (input) => handleSequence(input as SequenceToolInput));
+  registerJsonTool(server, "browse_links", "Navigate once and return only visible navigable links.", linksToolShape, readOnlyOpenWorld, async (input) => handleLinks(input as LinksToolInput), linksOutputSchema);
+  registerJsonTool(server, "browse_forms", "Navigate once and return form fields and submit controls.", formsToolShape, readOnlyOpenWorld, async (input) => handleForms(input as FormsToolInput), formsOutputSchema);
+  registerJsonTool(server, "browse_outline", "Navigate once and return page headings and landmarks.", outlineToolShape, readOnlyOpenWorld, async (input) => handleOutline(input as OutlineToolInput), outlineOutputSchema);
+  registerJsonTool(server, "browse_find", "Navigate once, search visible text, and return bounded context matches.", findToolShape, readOnlyOpenWorld, async (input) => handleFind(input as FindToolInput), findOutputSchema);
+  registerJsonTool(server, "browse_screenshot", "Navigate once and capture a bounded screenshot.", screenshotToolShape, readOnlyOpenWorld, async (input) => handleScreenshot(input as ScreenshotToolInput));
+  registerJsonTool(server, "browse_console", "Navigate once and return bounded console diagnostics.", consoleToolShape, readOnlyOpenWorld, async (input) => handleConsole(input as ConsoleToolInput));
+  registerJsonTool(server, "browse_network_summary", "Navigate once and return a bounded network diagnostic summary.", networkSummaryToolShape, readOnlyOpenWorld, async (input) => handleNetworkSummary(input as NetworkSummaryToolInput), networkSummaryOutputSchema);
+  registerJsonTool(server, "browse_session_start", "Start an isolated short-lived browser session.", sessionStartToolShape, nonReadOnlyOpenWorld, async (input) => handleSessionStart(input as SessionStartToolInput));
+  registerJsonTool(server, "browse_session_navigate", "Navigate an existing browser session.", sessionNavigateToolShape, nonReadOnlyOpenWorld, async (input) => handleSessionNavigate(input as SessionNavigateToolInput));
+  registerJsonTool(server, "browse_session_action", "Run one bounded action in an existing browser session.", sessionActionToolShape, nonReadOnlyOpenWorld, async (input) => handleSessionAction(input as SessionActionToolInput));
+  registerJsonTool(server, "browse_session_snapshot", "Read the current state of an existing browser session.", sessionSnapshotToolShape, readOnlyOpenWorld, async (input) => handleSessionSnapshot(input as SessionSnapshotToolInput));
+  registerJsonTool(server, "browse_session_resume", "Resume a paused session after human action and return current state.", sessionResumeToolShape, nonReadOnlyOpenWorld, async (input) => handleSessionResume(input as SessionResumeToolInput));
+  registerJsonTool(server, "browse_session_close", "Close an existing browser session.", sessionCloseToolShape, nonReadOnlyOpenWorld, async (input) => handleSessionClose(input as SessionCloseToolInput));
 
   return server;
 }

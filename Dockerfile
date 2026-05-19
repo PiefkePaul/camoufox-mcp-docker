@@ -1,5 +1,6 @@
-FROM node:20-bullseye AS builder
+FROM node:22-bookworm AS builder
 
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     build-essential \
@@ -8,16 +9,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Copy package files
 COPY package.json package-lock.json* ./
+
+# Install dependencies
 RUN npm ci
 
+# Copy source code
 COPY . .
+
+# Build TypeScript
 RUN npm run build
 
-# Fetch the Camoufox browser for the active build platform.
-RUN npx -y camoufox@0.1.2 fetch
+# Fetch the browser
+RUN npx camoufox-js fetch
 
-FROM node:20-bullseye-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 
 ENV NODE_ENV=production \
     MCP_TRANSPORT=http \
@@ -25,7 +32,8 @@ ENV NODE_ENV=production \
     MCP_PORT=3000 \
     MCP_PATH=/mcp \
     MCP_HEALTH_PATH=/health \
-    MCP_ENABLE_JSON_RESPONSE=true
+    MCP_ENABLE_JSON_RESPONSE=true \
+    MCP_HTTP_SESSION_MODE=stateless
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb \

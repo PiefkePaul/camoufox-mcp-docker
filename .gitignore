@@ -141,7 +141,8 @@ CLAUDE.md
 
 # Project specific
 data-files/
+.syntext/
 .DS_Store
 TODO.md
-CHANGELOG.md
 publish_docker.sh
+repomix-output.xml

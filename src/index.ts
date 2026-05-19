@@ -2,43 +2,59 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import chalk from "chalk";
 
-import { type AppConfig, loadConfig } from "./config.js";
+import { closeActiveBrowsers, rejectPendingBrowses, setBrowserShuttingDown } from "./browser-runtime.js";
+import { assertNetworkSandboxPolicy, loadConfig } from "./config.js";
 import { createCamoufoxServer } from "./createServer.js";
 import { startHttpServer } from "./httpServer.js";
+import { closeActiveSessions } from "./sessions.js";
+import { describeError } from "./utils.js";
 
 type ShutdownHandler = () => Promise<void>;
 
-async function startStdioServer(config: AppConfig): Promise<ShutdownHandler> {
-  const server = createCamoufoxServer({ debugLocale: config.debugLocale });
+async function startStdioServer(): Promise<ShutdownHandler> {
+  const server = createCamoufoxServer();
   const transport = new StdioServerTransport();
 
   await server.connect(transport);
   console.error(chalk.yellow("Camoufox MCP Server is running on stdio..."));
 
-  return async () => Promise.resolve();
+  return async () => {
+    await server.close();
+  };
 }
 
 async function main(): Promise<void> {
+  assertNetworkSandboxPolicy();
   const config = loadConfig();
+  if (config.debugLocale) {
+    process.env.MCP_DEBUG_LOCALE = "true";
+  }
 
   const shutdown =
     config.transport === "http"
       ? (await startHttpServer(config)).close
-      : await startStdioServer(config);
+      : await startStdioServer();
 
   let closing = false;
-  const stop = async (reason: string, exitCode = 0) => {
+  const stop = async (reason: string, exitCode = 0): Promise<void> => {
     if (closing) {
+      if (exitCode !== 0) {
+        process.exit(exitCode);
+      }
       return;
     }
 
     closing = true;
+    setBrowserShuttingDown(true);
+    console.error(chalk.yellow(`[Camoufox] Shutting down server (${reason})...`));
+    rejectPendingBrowses("Server is shutting down.");
 
     try {
-      console.error(chalk.yellow(`[Camoufox] Shutting down server (${reason})...`));
+      await closeActiveSessions();
+      await closeActiveBrowsers();
       await shutdown();
-    } catch (error) {
-      console.error(chalk.red("[Camoufox] Error during shutdown:"), error);
+    } catch (shutdownError) {
+      console.error(chalk.red("[Camoufox] Shutdown cleanup failed: " + describeError(shutdownError)));
       process.exitCode = 1;
     } finally {
       process.exit(exitCode);

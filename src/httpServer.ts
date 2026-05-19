@@ -138,7 +138,7 @@ export async function startHttpServer(config: AppConfig): Promise<HttpServerHand
   }
 
   async function createSession(): Promise<SessionContext> {
-    const server = createCamoufoxServer({ debugLocale: config.debugLocale });
+    const server = createCamoufoxServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       enableJsonResponse: config.enableJsonResponse,
@@ -158,7 +158,7 @@ export async function startHttpServer(config: AppConfig): Promise<HttpServerHand
   }
 
   async function handleStatelessPost(req: Request, res: Response): Promise<void> {
-    const server = createCamoufoxServer({ debugLocale: config.debugLocale });
+    const server = createCamoufoxServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: config.enableJsonResponse,

@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Added opt-in `clickMode: "auto"` for click actions, `CAPTCHA_AUTONOMOUS=true` for LLM-assisted challenge context and provider playbooks, and network sandbox posture reporting in `camoufox_status`.
+
+### Fixed
+- Bounded `browse_sequence` with a cumulative action timeout policy and graceful fatal shutdown cleanup.
+
+## [2.0.5] - 2026-05-13
+
+### Fixed
+- Preserved blocked private-navigation errors when a page starts navigating during final content extraction.
+- Avoided flaky selector screenshot stability waits under Node 24 CI.
+
+## [2.0.4] - 2026-05-13
+
+### Changed
+- Switched the NPM release job to npm Trusted Publishing with GitHub Actions OIDC.
+- Normalized the package binary path for NPM publish metadata.
+- Removed and ignored the generated `repomix-output.xml` artifact.
+
+## [2.0.3] - 2026-05-12
+
+### Fixed
+- Removed Playwright's low-level click path from `browse_sequence` click actions to avoid CI virtual display timeouts.
+
+## [2.0.2] - 2026-05-12
+
+### Fixed
+- Made `browse_sequence` click actions stable under CI virtual display environments.
+
+## [2.0.1] - 2026-05-12
+
+### Fixed
+- Updated the MCP server-reported version to match the package version.
+- Made `browse_sequence` click actions avoid waiting for anchor-triggered navigations before the post-action safety guard runs.
+
+## [2.0.0] - 2026-05-12
+
+### Changed
+- Raised the minimum supported Node.js version to 22.
+- The default `browse` wait strategy is now `load` so JavaScript verification pages have time to complete before content extraction.
+- Updated the README install quick start.
+- Updated runtime and test dependencies.
+
+### Security
+- Bumped transitive `form-data` dependency to 4.0.4.
+- Bumped transitive `tar-fs` dependency to 2.1.4.
+
+## [1.5.0] - 2026-05-11
+
+### Added
+- Bounded JSON browse responses with text, HTML, and metadata output modes.
+- CSS selector extraction and configurable output character limits.
+- Server policy controls for unsafe browser options, concurrency, queue length, and screenshot limits.
+- Initial URL, redirect, final URL, and browser request SSRF protections for local, private, link-local, and reserved address space.
+- Local and Docker regression tests for blocked localhost targets and unsafe browser options.
+
+### Changed
+- Docker publishing targets `linux/amd64`.
+- The default browse response returns visible text instead of raw HTML.
+
+### Fixed
+- CI now fails on local test failures.
+- Local test runner now executes from the repository root.
+
 ## [1.1.0] - 2025-01-10
 
 ### Added

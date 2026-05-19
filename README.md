@@ -1,8 +1,43 @@
 # Camoufox MCP Server for NAS and Docker
 
-This fork turns `camoufox-mcp` into a MCP server that can run as a long-lived Docker service on a NAS and be exposed as a remote MCP endpoint for clients such as Claude and ChatGPT.
+This fork turns `camoufox-mcp` into an MCP server that can run as a long-lived Docker service on a NAS and be exposed as a remote MCP endpoint for clients such as Claude and ChatGPT.
 
-It keeps the original `browse` tool, but adds a network-facing HTTP mode, a health endpoint, Docker Compose support, and runtime configuration via environment variables or CLI flags.
+It keeps the upstream browser automation tools and security policy, and adds a network-facing HTTP mode, a health endpoint, Docker Compose support, and runtime configuration through environment variables or CLI flags.
+
+## Quick Install
+
+Use the published npm package unless you are developing this repository locally.
+
+### Claude Code CLI
+
+```bash
+claude mcp add camoufox -- npx -y camoufox-mcp-server@latest
+```
+
+For a shared project-scoped Claude Code config:
+
+```bash
+claude mcp add --scope project camoufox -- npx -y camoufox-mcp-server@latest
+```
+
+Verify with `/mcp` inside Claude Code.
+
+### Codex CLI
+
+```bash
+codex mcp add camoufox -- npx -y camoufox-mcp-server@latest
+```
+
+Codex stores MCP servers in `~/.codex/config.toml` by default. Verify with `/mcp` inside Codex.
+
+## Features
+
+- Advanced anti-detection: rotating OS fingerprints, realistic cursor movements, and browser fingerprint spoofing.
+- Enhanced parameters: configurable wait strategies, timeouts, viewport dimensions, diagnostics, and screenshots.
+- Cross-platform: works on Windows, macOS, and Linux, including Docker.
+- Privacy controls: SSRF protections, WebRTC blocking, WebGL blocking, image blocking, proxy support, and bounded output.
+- Session tools: short-lived isolated browser sessions with challenge pause/resume support.
+- Docker/NAS deployment: HTTP MCP endpoint, health endpoint, optional Bearer token auth, and stateless HTTP mode by default.
 
 ## What changed in this fork
 
@@ -21,7 +56,7 @@ It keeps the original `browse` tool, but adds a network-facing HTTP mode, a heal
 Running the server on your NAS is only one half of the setup. For Claude and ChatGPT to connect to it as a remote MCP server, the endpoint must also be reachable over public HTTPS.
 
 - ChatGPT only supports remote MCP servers, not local ones.
-- Claude remote connectors are also reached from Anthropic's cloud, not from your desktop app directly.
+- Claude remote connectors are reached from Anthropic's cloud, not from your desktop app directly.
 - A NAS endpoint that is only available inside your LAN will not be enough for those remote connectors.
 
 In practice, you usually want one of these setups:
@@ -92,7 +127,7 @@ docker run -d \
   camoufox-mcp
 ```
 
-If you explicitly want the old container-style stdio behavior, start it like this:
+If you explicitly want stdio behavior in a container, start it like this:
 
 ```bash
 docker run -i --rm -e MCP_TRANSPORT=stdio camoufox-mcp
@@ -111,8 +146,10 @@ The server can be configured through environment variables or CLI flags.
 | `MCP_HEALTH_PATH` | `/health` | Health endpoint path |
 | `MCP_ENABLE_JSON_RESPONSE` | `true` | Enables JSON responses for compatible MCP clients |
 | `MCP_HTTP_SESSION_MODE` | `stateless` | HTTP session mode: `stateless` for ChatGPT/most remote clients, `stateful` only if a client requires persistent MCP sessions |
-| `MCP_DEBUG_LOCALE` | `false` | Logs requested and effective browser locale data for each `browse` call |
+| `MCP_DEBUG_LOCALE` | `false` | Logs requested and effective browser locale data for each browser operation |
 | `MCP_AUTH_TOKEN` | unset | Optional Bearer token for clients that can send static auth headers |
+| `CAMOUFOX_MCP_NETWORK_SANDBOX` | `0` | Declare that container, VM, or firewall egress controls are configured |
+| `CAMOUFOX_MCP_REQUIRE_NETWORK_SANDBOX` | `0` | Refuse startup unless network sandboxing is declared |
 
 CLI examples:
 
@@ -133,8 +170,6 @@ npm run build
 npm run start:stdio
 ```
 
-For local non-Docker development, Node 20 LTS is the safest choice because Camoufox pulls in native dependencies.
-
 ### Local HTTP mode
 
 Use this to test the remote MCP endpoint without Docker.
@@ -143,6 +178,16 @@ Use this to test the remote MCP endpoint without Docker.
 npm run build
 npm run start:http
 ```
+
+## Documentation
+
+- [Configuration for AI assistants](docs/configuration.md)
+- [Usage examples](docs/examples.md)
+- [Tool parameters](docs/tool-parameters.md)
+- [Server policy](docs/server-policy.md)
+- [Development](docs/development.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Privacy and security](docs/privacy-security.md)
 
 ## Reverse proxy notes
 
@@ -155,88 +200,6 @@ If you place the service behind Nginx, Caddy, Traefik, Synology reverse proxy, o
 - In `stateless` mode, forwarding `POST` is enough
 - In `stateful` mode, forward `GET`, `POST`, and `DELETE` to the same MCP path
 
-If you are targeting Claude remote connectors, remember that Anthropic connects from its own cloud infrastructure. Your public endpoint must be reachable from there.
-
-## Claude integration
-
-For Claude remote connectors, use the public HTTPS MCP URL, for example:
-
-```text
-https://mcp.example.com/mcp
-```
-
-Current Anthropic guidance says:
-
-- Remote MCP servers are added through `Customize > Connectors`
-- Claude Desktop remote connectors are not configured through `claude_desktop_config.json`
-- Connections originate from Anthropic's cloud infrastructure, so your server must be publicly reachable over HTTPS
-
-If you are using the Claude API MCP connector, Anthropic also supports direct HTTP MCP servers from the Messages API.
-
-## ChatGPT integration
-
-For ChatGPT developer mode / apps, use the same public HTTPS MCP URL:
-
-```text
-https://mcp.example.com/mcp
-```
-
-Current OpenAI guidance says:
-
-- ChatGPT developer mode supports remote MCP servers over SSE and streaming HTTP
-- ChatGPT does not connect to local MCP servers directly
-- For ChatGPT app-style integrations, OAuth is the recommended production auth model
-
-### Important auth note
-
-The built-in `MCP_AUTH_TOKEN` support in this fork is useful for:
-
-- custom agents that can send a static Bearer token
-- API-driven MCP clients
-- reverse-proxy or gateway setups you control
-
-For first-party Claude and ChatGPT UI integrations, the clean long-term approach is usually:
-
-1. no auth while testing on a tightly controlled public endpoint, or
-2. a proper MCP-compatible OAuth flow in front of the server
-
-This fork does not implement a full OAuth provider yet.
-
-## Example API usage
-
-### Anthropic Messages API MCP connector
-
-Anthropic's API docs support remote HTTP MCP servers. A minimal server definition looks like:
-
-```json
-{
-  "type": "url",
-  "url": "https://mcp.example.com/mcp",
-  "name": "camoufox"
-}
-```
-
-### OpenAI Responses API MCP tool
-
-OpenAI's MCP docs support remote MCP servers in the `tools` array. A minimal tool entry looks like:
-
-```json
-{
-  "type": "mcp",
-  "server_label": "camoufox",
-  "server_url": "https://mcp.example.com/mcp",
-  "require_approval": "never"
-}
-```
-
-## Development
-
-```bash
-npm install
-npm run build
-npm run start:stdio
-```
-
 ## Troubleshooting
 
 ### The NAS container starts, but Claude or ChatGPT cannot connect
@@ -244,23 +207,10 @@ npm run start:stdio
 Usually this means one of these:
 
 - the server is not publicly reachable over HTTPS
-- the reverse proxy does not forward `GET`, `POST`, and `DELETE` to the MCP path
+- the reverse proxy does not forward the required methods to the MCP path
 - the proxy strips the `Authorization` or `mcp-session-id` header
 - the proxy buffers the response stream
 - the firewall blocks traffic from the vendor cloud
-
-### The service works locally, but not through the public URL
-
-Check:
-
-- TLS certificate is valid
-- the public URL points to the same MCP path as `MCP_PATH`
-- the reverse proxy does not rewrite `/mcp` unexpectedly
-- the health endpoint works through the public hostname
-
-### Token auth works in your own agent, but not in Claude or ChatGPT UI
-
-That is expected in many setups. Their first-party remote connector flows are centered around no-auth or OAuth-based server onboarding, not arbitrary static Bearer headers.
 
 ### ChatGPT says the `browse` schema is invalid
 
@@ -281,15 +231,7 @@ Use the updated image and pass `window` like this:
 
 That usually points to session handling on the remote client side rather than the browser automation itself.
 
-This fork now defaults HTTP mode to `MCP_HTTP_SESSION_MODE=stateless`, which is the safest setting for ChatGPT-style remote MCP connectors.
-
-If you previously deployed an older image or explicitly set stateful mode, switch back to:
-
-```bash
-MCP_HTTP_SESSION_MODE=stateless
-```
-
-Only use `stateful` if you know your client requires persistent MCP sessions and reliably sends `mcp-session-id` on all follow-up requests.
+This fork defaults HTTP mode to `MCP_HTTP_SESSION_MODE=stateless`, which is the safest setting for ChatGPT-style remote MCP connectors.
 
 ### Debugging locale mismatches
 
@@ -299,16 +241,8 @@ If a client claims it sent `de-DE` or `fr-FR`, but the page reports something el
 MCP_DEBUG_LOCALE=true
 ```
 
-Each `browse` call will then log:
-
-- the raw `locale` value received by the MCP tool
-- the effective `navigator.language`
-- the effective `navigator.languages`
-- the resolved `Intl.DateTimeFormat().resolvedOptions().locale`
-- the page `<html lang>` value when present
-
-That makes it much easier to tell whether the mismatch comes from the client request or from Camoufox/browser internals.
+Each browser operation will then log the raw requested locale and the effective browser locale values reported by the page.
 
 ## License
 
-MIT License. See `LICENSE`.
+MIT License - see [LICENSE](LICENSE) file for details.
