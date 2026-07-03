@@ -247,7 +247,7 @@ Read `references/json-rpc-debug.md` when the host hasn't registered the server o
 
 ## Host Setup Failures
 
-Native module errors such as `better-sqlite3` compiled for the wrong Node.js version are host or gateway dependency problems, not Camoufox server dependencies. Rebuild the host dependency under the Node version used by that host, then restart the gateway because the old MCP process keeps the old native module loaded.
+Native module errors such as `better-sqlite3` compiled for the wrong Node.js version (`NODE_MODULE_VERSION` mismatch) come from this server's own dependency tree: `camoufox-js` pulls in `better-sqlite3`, whose native binary is tied to the Node version that ran the install. On Node 22.15+ the server (2.1.6+) avoids the native module entirely by using the built-in `node:sqlite`, so first make sure the gateway launches an up-to-date server version. If the error persists on an older Node, remember that `npx` keeps its own dependency copy under `~/.npm/_npx/<hash>/node_modules` — rebuilding another checkout does not fix it; clear the npx cache (`rm -rf ~/.npm/_npx`) using the same Node version the gateway spawns, then restart the gateway because the old MCP process keeps the old native module loaded.
 
 If the host blocks direct config edits, do not patch protected files. Use the host CLI or tell the operator exactly what to add. For Hermes, this verified command registers Camoufox with unsafe browser options enabled:
 

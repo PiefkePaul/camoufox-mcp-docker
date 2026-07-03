@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.6] - 2026-07-03
+
+### Fixed
+- Eliminated `better-sqlite3` NODE_MODULE_VERSION/ABI mismatch failures when the gateway spawns the server with a different Node version than the one that installed dependencies (for example Hermes launching Node 25 via nvm against an npx cache installed under Node 22). On Node 22.15+ the server now redirects camoufox-js's `better-sqlite3` import to a shim backed by the built-in `node:sqlite` module, so the native binary is never loaded. Set `CAMOUFOX_MCP_NO_SQLITE_SHIM=1` to opt out.
+- Native module ABI errors that still occur (shim opted out or unavailable) now include an actionable hint in tool error output: the runtime Node version and path, the npx cache location (`~/.npm/_npx`), and rebuild guidance.
+
+### Changed
+- Corrected troubleshooting and skill docs that claimed `better-sqlite3` errors come from the host or gateway dependency tree — it is a transitive dependency of this server via `camoufox-js`. Documented the npx cache pitfall and added a troubleshooting entry for Cloudflare challenge pages.
+
 ## [2.1.0] - 2026-06-18
 
 ### Added

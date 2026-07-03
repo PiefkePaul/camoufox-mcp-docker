@@ -2,7 +2,12 @@ import { DEFAULT_STEALTH_PROFILE, MAX_DIAGNOSTIC_TEXT_CHARS, SUPPORTED_OSES } fr
 import type { BrowserLaunchInput, ProxyConfig, StealthProfile, SupportedOs } from "./types.js";
 
 export function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  if (code === "ERR_DLOPEN_FAILED" || /NODE_MODULE_VERSION|ERR_DLOPEN_FAILED/.test(message)) {
+    return `${message} [Native module ABI mismatch: this server is running Node ${process.version} (${process.execPath}), but a native dependency (better-sqlite3, pulled in by camoufox-js) was installed under a different Node version. If the server is launched via npx, clear the npx cache (rm -rf ~/.npm/_npx) so dependencies reinstall under the runtime Node, or run "npm rebuild better-sqlite3" in the server's install directory using the same Node the gateway spawns. Node >= 22.15 avoids this entirely via the built-in node:sqlite shim.]`;
+  }
+  return message;
 }
 
 export async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {

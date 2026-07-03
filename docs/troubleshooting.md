@@ -24,9 +24,14 @@
    - The default `waitStrategy` is `domcontentloaded`
    - If a call overrides it to `load` or `networkidle`, try removing the override or setting `waitStrategy: "domcontentloaded"`
 
-6. **Hermes MCP tools do not appear or discovery fails**
-   - Native module errors such as `better-sqlite3` compiled for the wrong Node.js version usually come from the host or gateway dependency tree, not this server
-   - Rebuild the host dependency under the Node version used by that host, then restart the gateway so the MCP server process reloads native modules
+6. **`better-sqlite3` NODE_MODULE_VERSION / ABI mismatch errors**
+   - `better-sqlite3` is a dependency of this server, pulled in transitively through `camoufox-js`, which uses it to read a bundled WebGL fingerprint database
+   - The native binary is downloaded for the Node ABI of the Node version that ran the install. If the gateway spawns the server with a different Node version (for example npm install under Node 22 but the gateway launches Node 25 via nvm), loading fails with `NODE_MODULE_VERSION X ... requires NODE_MODULE_VERSION Y`
+   - As of 2.1.6 this error should no longer occur on Node 22.15+: the server redirects `better-sqlite3` to the built-in `node:sqlite` module, so no native binary is loaded. Set `CAMOUFOX_MCP_NO_SQLITE_SHIM=1` to opt out and use the native module
+   - On older Node runtimes, note that when the server is launched via `npx`, its dependencies live in the npx cache (`~/.npm/_npx/<hash>/node_modules`) — rebuilding `better-sqlite3` in another checkout does not fix the copy the server actually loads. Clear the cache (`rm -rf ~/.npm/_npx`) using the same Node version the gateway spawns, or run `npm rebuild better-sqlite3` inside the npx cache directory itself
+   - Restart the gateway afterwards so the MCP server process reloads native modules
+
+7. **Hermes MCP tools do not appear or discovery fails**
    - For Hermes direct skill installs, register the MCP server explicitly:
      `hermes mcp add camoufox --command npx --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1 --args -y camoufox-mcp-server@latest`
    - `--args` must be the last option and must receive plain argv tokens, not a JSON array string
@@ -35,8 +40,14 @@
    - Camoufox tools appear as `mcp_camoufox_*`; `browser_navigate` is Hermes' built-in browser, not Camoufox
    - If Hermes reports ambiguous `camoufox` skills, keep only one installed Camoufox skill path or load the categorized path explicitly
 
-7. **OpenClaw still uses an old MCP process after rebuild**
+8. **OpenClaw still uses an old MCP process after rebuild**
    - Restart the OpenClaw gateway after changing config or rebuilding the server
+
+9. **Cloudflare or other challenge pages instead of content**
+   - High-security sites may challenge any automated browser; this is expected and not fully solvable server-side
+   - Enable `geoip` so the fingerprint locale/timezone matches the exit IP, and use `humanize` cursor movement
+   - Datacenter IPs are heavily challenged; a residential or mobile proxy via the `proxy` option significantly improves pass rates
+   - Session tools support challenge pause/resume so a human can complete an interactive challenge when needed
 
 ### Debug Mode
 
