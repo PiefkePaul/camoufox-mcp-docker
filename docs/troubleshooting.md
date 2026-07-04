@@ -1,5 +1,10 @@
 # Troubleshooting
 
+On a local checkout, run `npm run doctor` first. It checks Node version, the
+`camoufox-js` and `playwright-core` pins, the cached browser build, and drives a
+real `browse`, printing the exact fix for each failure. It resolves most of the
+issues below in one command.
+
 ### Common Issues
 
 1. **"Camoufox browser not found"**
@@ -48,6 +53,17 @@
    - Enable `geoip` so the fingerprint locale/timezone matches the exit IP, and use `humanize` cursor movement
    - Datacenter IPs are heavily challenged; a residential or mobile proxy via the `proxy` option significantly improves pass rates
    - Session tools support challenge pause/resume so a human can complete an interactive challenge when needed
+
+10. **Browser fails to launch / `Library not loaded: @rpath/libmozglue.dylib` after changing binary versions**
+    - Overlaying a new browser build onto an old cached bundle corrupts it. Wipe the cache, then refetch; do not fetch over the top:
+      `rm -rf ~/Library/Caches/camoufox/Camoufox.app ~/Library/Caches/camoufox/version.json && npm run fetch:camoufox`
+    - Linux/Docker cache path: `rm -rf ~/.cache/camoufox && npm run fetch:camoufox` (respects `XDG_CACHE_HOME`)
+    - `npm run doctor` reports a version/build mismatch and prints the wipe command
+
+11. **`Browser.setDefaultViewport ... isMobile ... not described in this scheme`, or anti-detection regressed after `npx @latest`**
+    - `camoufox-js` floats `playwright-core` (peer `*`). This package pins `playwright-core` as a direct dependency, but npm `overrides` alone would not: they bind only the root project, so a raw `npx`/global install can still pull a newer `playwright-core` than the Camoufox browser supports
+    - A `playwright-core` too new for the browser build breaks the Juggler protocol (1.61+ sends an `isMobile` viewport field the browser rejects; 1.60 breaks a navigation guard). Match the pair; do not bump one alone
+    - On a checkout, `npm run doctor` fails if `playwright-core` drifted off the pin
 
 ### Debug Mode
 

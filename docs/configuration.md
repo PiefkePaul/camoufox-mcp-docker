@@ -98,7 +98,7 @@ mcp_servers:
       CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS: "1"
 ```
 
-For local development, copy `plugins/camoufox/skills/camoufox/` into `~/.hermes/skills/camoufox/`, run `npm install && npm run build`, and use this shape instead:
+For local development, copy `plugins/camoufox/skills/camoufox/` into `~/.hermes/skills/camoufox/`, run `npm install && npm run build && npm run fetch:camoufox`, then `npm run doctor` to confirm the browser launches before wiring Hermes. Use this shape instead:
 
 ```yaml
 mcp_servers:

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-04
+
+### Fixed
+- Pinned `playwright-core` as a direct dependency (`1.59.0`), not only via `overrides`. npm `overrides` bind the root project only, so `npx camoufox-mcp-server@latest` and global installs previously let `camoufox-js`'s `playwright-core: *` peer float to the latest release (1.61+), which the Camoufox Juggler rejects (`Browser.setDefaultViewport ... isMobile ... not described in this scheme`) — the published server failed to launch a browser on those install paths. The direct pin holds `playwright-core` at 1.59.0 for every install path; the `overrides` entry remains for transitive dedupe.
+
+### Added
+- `npm run doctor` preflight (`scripts/doctor.mjs`, no new deps): checks Node >=22, the exact `camoufox-js` pin, that `playwright-core` is a direct pin at the expected version, that the cached browser build matches, then drives a real `browse` to prove the browser launches. Prints the exact fix (including the cache-wipe command) for each failure.
+- Skill/docs coverage for bringing the server up and troubleshooting: a local bring-up flow in `SKILL.md`, and troubleshooting entries for corrupt/mismatched browser cache, `better-sqlite3` native-module rebuilds, and `playwright-core` drift under `npx @latest`.
+
 ## [2.1.6] - 2026-07-03
 
 ### Fixed

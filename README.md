@@ -166,7 +166,7 @@ Use Camoufox to browse https://developer.mozilla.org with images blocked and Web
 
 ## Versioning
 
-`camoufox-js` and `playwright-core` are pinned (`camoufox-js` 0.10.2, `playwright-core` 1.59.0 via `overrides`). `camoufox-js` does not constrain `playwright-core`, so an unpinned install pulls the latest Playwright, and `playwright-core` 1.60+ is currently incompatible with the Camoufox browser build (1.60 breaks a navigation guard; 1.61 sends an `isMobile` viewport option Firefox/Camoufox rejects). The pins are the newest combination that passes the full test suite. They will be bumped once a newer Camoufox build and a compatible Playwright are verified together. Do not loosen them without re-running `npm run test:all`.
+`camoufox-js` (0.10.2) and `playwright-core` (1.59.0) are pinned, fetching the Camoufox 135.0.1-beta.24 browser build. `playwright-core` is a **direct** pinned dependency (not just an `overrides` entry) because npm `overrides` only bind the root project: without a direct pin, `npx`/global installs let `camoufox-js`'s peer float `playwright-core` to the latest, and `playwright-core` 1.60+ is incompatible with the Camoufox browser (1.60 breaks a navigation guard; 1.61 sends an `isMobile` viewport option Firefox/Camoufox rejects). The pins are the newest combination that passes the full test suite. Run `npm run doctor` to check them end-to-end, and do not loosen them without re-running `npm run test:all`.
 
 ## Documentation
 

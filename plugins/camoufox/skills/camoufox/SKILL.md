@@ -28,6 +28,26 @@ This skill does not start the server. Confirm an MCP server named `camoufox` is 
 
 Bare `npx -y camoufox-mcp-server@latest` remains safe by default unless the host config adds that env var.
 
+## Bring the Server Up (operator / local checkout)
+
+`npx camoufox-mcp-server@latest` self-installs, but a local checkout or a first
+run needs the browser binary fetched and a preflight before you trust it:
+
+```bash
+npm install            # Node >=22 required
+npm run build          # compile dist/
+npm run fetch:camoufox # download the Camoufox browser binary
+npm run doctor         # preflight: pins, cached binary, live browse smoke test
+```
+
+`npm run doctor` is the guardrail. It verifies Node >=22, the exact `camoufox-js`
+pin, that `playwright-core` resolves to the pinned version (it floats otherwise),
+that the cached browser build matches the expected one, and then drives a real
+`browse` to prove the browser actually launches. Run it first whenever the server
+misbehaves; it prints the exact fix (including the cache wipe command) for each
+failure. Then register the server with your host (see Host Setup Failures below
+for Hermes).
+
 ## Tool Names
 
 Hosts expose MCP tool names differently. Use whatever the host lists; common forms:
@@ -247,7 +267,7 @@ Read `references/json-rpc-debug.md` when the host hasn't registered the server o
 
 ## Host Setup Failures
 
-Native module errors such as `better-sqlite3` compiled for the wrong Node.js version (`NODE_MODULE_VERSION` mismatch) come from this server's own dependency tree: `camoufox-js` pulls in `better-sqlite3`, whose native binary is tied to the Node version that ran the install. On Node 22.15+ the server (2.1.6+) avoids the native module entirely by using the built-in `node:sqlite`, so first make sure the gateway launches an up-to-date server version. If the error persists on an older Node, remember that `npx` keeps its own dependency copy under `~/.npm/_npx/<hash>/node_modules` — rebuilding another checkout does not fix it; clear the npx cache (`rm -rf ~/.npm/_npx`) using the same Node version the gateway spawns, then restart the gateway because the old MCP process keeps the old native module loaded.
+Native module errors such as `better-sqlite3` compiled for the wrong Node.js version (`NODE_MODULE_VERSION` mismatch) come from this server's own dependency tree: `camoufox-js` pulls in `better-sqlite3`, whose native binary is tied to the Node version that ran the install. On Node 22.15+ the server (2.1.6+) avoids the native module entirely by using the built-in `node:sqlite`, so first make sure the gateway launches an up-to-date server version. If the error persists on an older Node, remember that `npx` keeps its own dependency copy under `~/.npm/_npx/<hash>/node_modules` — rebuilding another checkout does not fix it; clear the npx cache (`rm -rf ~/.npm/_npx`) using the same Node version the gateway spawns, then restart the gateway because the old MCP process keeps the old native module loaded. On a local checkout, `npm run doctor` surfaces most launch-blocking problems before a `browse` fails.
 
 If the host blocks direct config edits, do not patch protected files. Use the host CLI or tell the operator exactly what to add. For Hermes, this verified command registers Camoufox with unsafe browser options enabled:
 
@@ -280,3 +300,5 @@ Common failures:
 - **`evaluate` rejected**: `CAMOUFOX_MCP_ALLOW_EVALUATE` not set (`evaluateAllowed: false`).
 - **Hanging navigation**: a call overrode `waitStrategy` to `load`/`networkidle`; revert to `domcontentloaded` and try a shorter `timeout`.
 - **Empty output**: narrow with `selector`, switch to `browse_snapshot`, or check `browse_console` and `browse_network_summary`.
+- **Browser won't launch / `Library not loaded: @rpath/libmozglue.dylib`**: a corrupt or mismatched binary cache, usually from fetching a new build over an old one. Wipe the cache and refetch rather than overlaying: `rm -rf ~/Library/Caches/camoufox/Camoufox.app ~/Library/Caches/camoufox/version.json && npm run fetch:camoufox` (Linux: `rm -rf ~/.cache/camoufox && npm run fetch:camoufox`). `npm run doctor` reports the mismatch and prints this command.
+- **Anti-detection suddenly worse / Juggler errors after `npx @latest`**: `camoufox-js` floats `playwright-core`, so a foreign install can drift it off the pinned version. On a checkout the `overrides` pin holds it; `npm run doctor` flags a drift.
