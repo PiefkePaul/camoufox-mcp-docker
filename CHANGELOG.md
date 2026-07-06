@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-07-06
+
+### Added
+- CI now publishes the OpenClaw/ClawHub bundle (`@whit3rabbit/camoufox-mcp`) on tagged releases via a `publish-clawhub` job (`clawhub package validate` + `publish --family bundle-plugin` from a clean staging dir), using OIDC trusted publishing with a `CLAWHUB_TOKEN` fallback. Previously the bundle was never published, so `openclaw plugins install clawhub:@whit3rabbit/camoufox-mcp` could not resolve. Requires a one-time trusted-publisher setup on ClawHub for scope `@whit3rabbit`.
+- `llms.txt` at the repo root: a link-style install index with per-host commands (Claude Code, Codex, OpenClaw, Hermes, opencode, Pi) for coding agents.
+
+### Fixed
+- A `browse`/`snapshot`/`sequence` call on a machine without the Camoufox binary now fails fast with an actionable message naming the fix command (`npx -y camoufox-js fetch`) instead of a generic launch error. npx installs do not prefetch the ~780MB binary.
+- Rewrote the OpenClaw and Hermes install docs (README, `docs/configuration.md`): OpenClaw leads with the registry-free `openclaw mcp add …` path that works today (ClawHub install marked as post-publish); Hermes documents the two-step skill + `hermes mcp add` flow with an explicit warning not to use `hermes plugins install` (this repo has no root `plugin.yaml`, so it is rejected as an invalid plugin). Corrected the Hermes tool-name prefix to `mcp__camoufox…`.
+
 ## [2.2.0] - 2026-07-04
 
 ### Fixed

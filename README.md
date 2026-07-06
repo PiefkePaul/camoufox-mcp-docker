@@ -34,7 +34,18 @@ Use these when you want the `camoufox` skill plus the packaged MCP server config
 
 #### OpenClaw
 
-Install the published ClawHub bundle:
+Register the MCP server directly. This works today with no registry publish (`--arg`
+is singular and repeatable; the `--env` flag enables the unsafe-option tuning):
+
+```bash
+openclaw mcp add camoufox --command npx --arg -y --arg camoufox-mcp-server@latest --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1
+openclaw mcp list
+```
+
+OpenClaw exposes the tools with provider-safe names such as `camoufox__browse`.
+
+The ClawHub bundle (skill + config in one install) publishes on the next tagged
+release. Once it is live, you can instead run:
 
 ```bash
 openclaw plugins install clawhub:@whit3rabbit/camoufox-mcp
@@ -42,8 +53,6 @@ openclaw plugins inspect camoufox
 openclaw plugins doctor
 openclaw gateway restart
 ```
-
-OpenClaw exposes bundled MCP tools with provider-safe names such as `camoufox__browse`.
 
 #### Claude Code
 
@@ -69,23 +78,34 @@ Restart Codex or start a new thread after installing.
 
 #### Hermes
 
-Install the skill and then register the MCP server separately:
+Two commands: install the skill, then register the MCP server (Hermes skill installs do
+**not** auto-register MCP servers).
 
 ```bash
 hermes skills install whit3rabbit/camoufox-mcp/plugins/camoufox/skills/camoufox
 hermes mcp add camoufox --command npx --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1 --args -y camoufox-mcp-server@latest
 ```
 
-Hermes direct skill installs do not automatically register MCP servers.
+Do **not** run `hermes plugins install …` for this repo. Hermes plugins are Python
+packages with a root `plugin.yaml`; this repo has neither, so it clones but is rejected
+as "not a valid plugin." Use the two commands above.
 
-Hermes treats `--args` as plain argv tokens and it must be the last option. Do not pass a JSON array string there. Verify with:
+Hermes treats `--args` as plain argv tokens and it must be the last option. Do not pass a
+JSON array string there. In `~/.hermes/config.yaml`, `env` must be a **mapping**
+(`KEY: "value"`), not a list. Verify with:
 
 ```bash
 hermes mcp list
 hermes mcp test camoufox
 ```
 
-Restart Hermes from a separate terminal after changing MCP config, then use `mcp_camoufox_camoufox_status` to confirm `unsafeOptionsAllowed: true`. `browser_navigate` is Hermes' built-in browser tool, not Camoufox.
+First `browse` on a fresh machine needs the browser binary once (~780MB); if a call
+reports it is missing, run `npx -y camoufox-js fetch` and retry.
+
+Restart Hermes from a separate terminal after changing MCP config. Hermes namespaces MCP
+tools with an `mcp__camoufox…` prefix (commonly `mcp__camoufox__browse`); use whatever
+name your tool list shows, and confirm the status tool reports `unsafeOptionsAllowed:
+true`. `browser_navigate` is Hermes' own built-in browser tool, not Camoufox.
 
 For local-clone installs and additional hosts, see [Configuration for AI assistants](docs/configuration.md#installable-agent-skill-and-plugin-bundle).
 

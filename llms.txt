@@ -1,0 +1,29 @@
+# Camoufox MCP Server
+
+> MCP server for browser automation using Camoufox (a privacy-focused Firefox fork with anti-detection). Exposes a `browse` family of tools (navigate, extract text/links/forms/outline, snapshot, screenshot, multi-step sequences, stateful sessions) with bounded output and best-effort SSRF guards. Published on npm as `camoufox-mcp-server`; runs over stdio via `npx`. Node >= 22.
+
+## Install (pick your host)
+
+The MCP server works on every host via `npx -y camoufox-mcp-server@latest`. The first
+browse on a new machine fetches the ~780MB Camoufox binary; if a call reports the binary
+is missing, run `npx -y camoufox-js fetch` once, then retry. Add
+`CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1` in the env only if you need `firefox_user_prefs` /
+`args` / `exclude_addons` for hard-site tuning; bare installs are safe by default.
+
+- Claude Code (CLI): `claude mcp add camoufox -- npx -y camoufox-mcp-server@latest` (project scope: add `--scope project`). Verify with `/mcp`.
+- Claude Code (plugin + skill): `/plugin marketplace add whit3rabbit/camoufox-mcp` then `/plugin install camoufox@camoufox-mcp`.
+- Codex (CLI): `codex mcp add camoufox -- npx -y camoufox-mcp-server@latest` (env before `--`: `codex mcp add camoufox --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1 -- npx -y camoufox-mcp-server@latest`). Stored in `~/.codex/config.toml`.
+- Codex (plugin): `codex plugin marketplace add whit3rabbit/camoufox-mcp` then `codex plugin add camoufox@camoufox-mcp`.
+- OpenClaw: `openclaw mcp add camoufox --command npx --arg -y --arg camoufox-mcp-server@latest --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1` (note `--arg` is singular and repeatable). The ClawHub bundle install `openclaw plugins install clawhub:@whit3rabbit/camoufox-mcp` works once published.
+- Hermes (two steps): `hermes skills install whit3rabbit/camoufox-mcp/plugins/camoufox/skills/camoufox`, then `hermes mcp add camoufox --command npx --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1 --args -y camoufox-mcp-server@latest`. `--args` must be last; in `~/.hermes/config.yaml` `env` is a mapping, not a list. Do NOT use `hermes plugins install` — this repo has no root `plugin.yaml`, so Hermes rejects it as an invalid plugin.
+- opencode: add to `opencode.json` under `mcp`: `{"camoufox": {"type": "local", "command": ["npx", "-y", "camoufox-mcp-server@latest"], "enabled": true}}` (opencode uses `environment`, not `env`). Verify with `opencode mcp list`.
+- Pi: `pi install npm:pi-mcp-adapter`, then add `camoufox` to `.mcp.json` (`{"mcpServers": {"camoufox": {"command": "npx", "args": ["-y", "camoufox-mcp-server@latest"]}}}`).
+
+Tool names by host: Hermes `mcp__camoufox__browse`, OpenClaw `camoufox__browse`, Codex `camoufox:browse`, Claude Code `mcp__camoufox__browse`; raw MCP names are `browse`, `browse_snapshot`, `camoufox_status`, etc.
+
+## Docs
+
+- [Quick install, all hosts](README.md)
+- [Skill usage and tool-selection guide](plugins/camoufox/skills/camoufox/SKILL.md)
+- [Per-host configuration matrix](docs/configuration.md)
+- [JSON-RPC debugging (no host needed)](plugins/camoufox/skills/camoufox/references/json-rpc-debug.md)

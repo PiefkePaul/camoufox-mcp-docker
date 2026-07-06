@@ -60,7 +60,17 @@ Restart Codex or start a new thread after installing so the bundled skill and MC
 
 ### OpenClaw Bundle
 
-OpenClaw detects the bundle through `.codex-plugin/plugin.json` or `.claude-plugin/plugin.json`:
+The registry-free path works today (no publish needed). `--arg` is singular and
+repeatable; `--env` enables the unsafe-option tuning:
+
+```bash
+openclaw mcp add camoufox --command npx --arg -y --arg camoufox-mcp-server@latest --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1
+openclaw mcp list
+```
+
+The ClawHub bundle (skill + config in one install) publishes on the next tagged release.
+Once live, OpenClaw detects it through `.codex-plugin/plugin.json` or
+`.claude-plugin/plugin.json`:
 
 ```bash
 openclaw plugins install clawhub:@whit3rabbit/camoufox-mcp
@@ -82,7 +92,13 @@ hermes skills install whit3rabbit/camoufox-mcp/plugins/camoufox/skills/camoufox
 hermes mcp add camoufox --command npx --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1 --args -y camoufox-mcp-server@latest
 ```
 
-Hermes skills do not automatically install MCP servers, so configure the `camoufox` MCP server separately using `hermes mcp add`. In that command, `--env` values are `KEY=VALUE`, and `--args` must be the last option with plain argv tokens. Do not pass JSON strings such as `--args '["-y", "camoufox-mcp-server@latest"]'`.
+Do **not** run `hermes plugins install …` for this repo: Hermes plugins are Python
+packages with a root `plugin.yaml`, which this repo does not have, so it clones but is
+rejected as "not a valid plugin." Use the skill + `hermes mcp add` commands above.
+
+Hermes skills do not automatically install MCP servers, so configure the `camoufox` MCP server separately using `hermes mcp add`. In that command, `--env` values are `KEY=VALUE`, and `--args` must be the last option with plain argv tokens. Do not pass JSON strings such as `--args '["-y", "camoufox-mcp-server@latest"]'`. In `~/.hermes/config.yaml` the `env` block must be a **mapping** (`KEY: "value"`), never a list.
+
+On a fresh machine the first `browse` needs the browser binary once (~780MB). If a call reports it is missing, run `npx -y camoufox-js fetch` and retry.
 
 The resulting config should look like this:
 
@@ -119,7 +135,7 @@ hermes mcp test camoufox
 hermes gateway restart
 ```
 
-After restart, Camoufox tools should appear as `mcp_camoufox_*`. Use `mcp_camoufox_camoufox_status` to confirm `unsafeOptionsAllowed: true`. `browser_navigate` is Hermes' built-in browser tool, not Camoufox.
+After restart, Camoufox tools appear with an `mcp__camoufox…` prefix (commonly `mcp__camoufox__browse`); use whatever name your tool list shows and confirm the status tool reports `unsafeOptionsAllowed: true`. `browser_navigate` is Hermes' built-in browser tool, not Camoufox.
 
 If Hermes reports an ambiguous `camoufox` skill, keep only one installed Camoufox skill path or load the categorized path explicitly.
 

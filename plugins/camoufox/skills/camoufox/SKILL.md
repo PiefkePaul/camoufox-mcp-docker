@@ -28,6 +28,8 @@ This skill does not start the server. Confirm an MCP server named `camoufox` is 
 
 Bare `npx -y camoufox-mcp-server@latest` remains safe by default unless the host config adds that env var.
 
+On a fresh machine the first `browse` needs the Camoufox binary (~780MB), which npx installs do not prefetch. If a call returns `Camoufox browser binary not installed. Run: npx -y camoufox-js fetch`, run that one-time command (it lands in the shared OS cache) and retry.
+
 ## Bring the Server Up (operator / local checkout)
 
 `npx camoufox-mcp-server@latest` self-installs, but a local checkout or a first
@@ -52,13 +54,13 @@ for Hermes).
 
 Hosts expose MCP tool names differently. Use whatever the host lists; common forms:
 
-- Claude/Hermes style: `mcp_camoufox_browse`
+- Claude/Hermes style: `mcp__camoufox__browse` (Hermes namespaces MCP tools with an `mcp__camoufox…` prefix; the exact separator varies by version, so use whatever the host lists)
 - OpenClaw bundle style: `camoufox__browse`
 - Raw MCP name: `browse`
 
 This skill uses raw names (`browse`, `browse_find`, ...). Map them to your host's form.
 
-In Hermes, `browser_navigate` is the built-in browser tool, not Camoufox. Use the `mcp_camoufox_*` tools after `hermes mcp test camoufox` succeeds.
+In Hermes, `browser_navigate` is the built-in browser tool, not Camoufox. Use the `mcp__camoufox…` tools after `hermes mcp test camoufox` succeeds.
 
 ## Choosing a Tool
 

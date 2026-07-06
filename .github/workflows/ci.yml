@@ -70,6 +70,65 @@ jobs:
     - name: Publish to NPM
       run: npm publish --access public
 
+  publish-clawhub:
+    name: Publish ClawHub Bundle
+    needs: test
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      id-token: write   # OIDC trusted publishing to ClawHub
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '24.x'
+        package-manager-cache: false
+
+    # One-time setup by the maintainer: configure the trusted publisher on
+    # clawhub.ai for scope @whit3rabbit (`clawhub package trusted-publisher set`).
+    # OIDC (id-token) is used when configured; CLAWHUB_TOKEN is the fallback.
+    #
+    # `clawhub package validate` writes reports/ INTO the source folder, and the
+    # plugins/camoufox tree also carries generated evals/ and skills/camoufox-workspace/.
+    # So we validate in place, then publish a clean staging dir containing only the
+    # runtime bundle files (mirrors the manual procedure in AGENTS.md).
+    - name: Publish @whit3rabbit/camoufox-mcp bundle
+      env:
+        CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        npx -y clawhub package validate plugins/camoufox --json
+
+        version="$(node -p 'require("./package.json").version')"
+        stage="$(mktemp -d)"
+        mkdir -p "$stage/.codex-plugin" "$stage/.claude-plugin" \
+                 "$stage/skills/camoufox/agents" "$stage/skills/camoufox/references"
+        cp plugins/camoufox/.codex-plugin/plugin.json "$stage/.codex-plugin/plugin.json"
+        cp plugins/camoufox/.claude-plugin/plugin.json "$stage/.claude-plugin/plugin.json"
+        cp plugins/camoufox/.mcp.json "$stage/.mcp.json"
+        cp plugins/camoufox/openclaw.plugin.json "$stage/openclaw.plugin.json"
+        cp plugins/camoufox/package.json "$stage/package.json"
+        cp plugins/camoufox/skills/camoufox/SKILL.md "$stage/skills/camoufox/SKILL.md"
+        cp plugins/camoufox/skills/camoufox/agents/openai.yaml "$stage/skills/camoufox/agents/openai.yaml"
+        cp plugins/camoufox/skills/camoufox/references/json-rpc-debug.md "$stage/skills/camoufox/references/json-rpc-debug.md"
+        cp plugins/camoufox/skills/camoufox/references/sequence-actions.md "$stage/skills/camoufox/references/sequence-actions.md"
+
+        npx -y clawhub package publish "$stage" \
+          --family bundle-plugin \
+          --name @whit3rabbit/camoufox-mcp \
+          --display-name "Camoufox MCP" \
+          --owner whit3rabbit \
+          --version "$version" \
+          --source-repo whit3rabbit/camoufox-mcp \
+          --source-commit "$GITHUB_SHA" \
+          --source-ref "$GITHUB_REF_NAME" \
+          --source-path plugins/camoufox \
+          --json
+
   build-and-publish-docker:
     name: Build and Publish Docker Images
     needs: test
@@ -130,7 +189,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build-and-publish-npm, build-and-publish-docker]
+    needs: [build-and-publish-npm, publish-clawhub, build-and-publish-docker]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
