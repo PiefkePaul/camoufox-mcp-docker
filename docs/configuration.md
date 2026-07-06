@@ -68,9 +68,8 @@ openclaw mcp add camoufox --command npx --arg -y --arg camoufox-mcp-server@lates
 openclaw mcp list
 ```
 
-The ClawHub bundle (skill + config in one install) publishes on the next tagged release.
-Once live, OpenClaw detects it through `.codex-plugin/plugin.json` or
-`.claude-plugin/plugin.json`:
+Or install the published ClawHub bundle (skill + config in one step); OpenClaw detects it
+through `.codex-plugin/plugin.json` or `.claude-plugin/plugin.json`:
 
 ```bash
 openclaw plugins install clawhub:@whit3rabbit/camoufox-mcp
@@ -135,7 +134,7 @@ hermes mcp test camoufox
 hermes gateway restart
 ```
 
-After restart, Camoufox tools appear with an `mcp__camoufox…` prefix (commonly `mcp__camoufox__browse`); use whatever name your tool list shows and confirm the status tool reports `unsafeOptionsAllowed: true`. `browser_navigate` is Hermes' built-in browser tool, not Camoufox.
+After restart, Camoufox tools appear as `mcp_camoufox_<tool>` (single underscore, e.g. `mcp_camoufox_browse`; some setups show the double-underscore form `mcp__camoufox__browse`); use whatever name your tool list shows and confirm `mcp_camoufox_camoufox_status` reports `unsafeOptionsAllowed: true`. `browser_navigate` is Hermes' built-in browser tool, not Camoufox.
 
 If Hermes reports an ambiguous `camoufox` skill, keep only one installed Camoufox skill path or load the categorized path explicitly.
 

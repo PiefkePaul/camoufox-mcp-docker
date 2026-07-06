@@ -44,8 +44,7 @@ openclaw mcp list
 
 OpenClaw exposes the tools with provider-safe names such as `camoufox__browse`.
 
-The ClawHub bundle (skill + config in one install) publishes on the next tagged
-release. Once it is live, you can instead run:
+Or install the published ClawHub bundle (skill + MCP config in one step):
 
 ```bash
 openclaw plugins install clawhub:@whit3rabbit/camoufox-mcp
@@ -103,9 +102,11 @@ First `browse` on a fresh machine needs the browser binary once (~780MB); if a c
 reports it is missing, run `npx -y camoufox-js fetch` and retry.
 
 Restart Hermes from a separate terminal after changing MCP config. Hermes namespaces MCP
-tools with an `mcp__camoufox…` prefix (commonly `mcp__camoufox__browse`); use whatever
-name your tool list shows, and confirm the status tool reports `unsafeOptionsAllowed:
-true`. `browser_navigate` is Hermes' own built-in browser tool, not Camoufox.
+tools as `mcp_camoufox_<tool>` (single underscore, e.g. `mcp_camoufox_browse`,
+`mcp_camoufox_camoufox_status`; some setups show the double-underscore form
+`mcp__camoufox__browse`) — use whatever your tool list shows, and confirm
+`mcp_camoufox_camoufox_status` reports `unsafeOptionsAllowed: true`. `browser_navigate` is
+Hermes' own built-in browser tool, not Camoufox.
 
 For local-clone installs and additional hosts, see [Configuration for AI assistants](docs/configuration.md#installable-agent-skill-and-plugin-bundle).
 

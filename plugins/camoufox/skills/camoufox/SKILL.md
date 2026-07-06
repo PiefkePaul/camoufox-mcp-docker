@@ -54,13 +54,14 @@ for Hermes).
 
 Hosts expose MCP tool names differently. Use whatever the host lists; common forms:
 
-- Claude/Hermes style: `mcp__camoufox__browse` (Hermes namespaces MCP tools with an `mcp__camoufox…` prefix; the exact separator varies by version, so use whatever the host lists)
+- Hermes style: `mcp_camoufox_browse` (single underscore, `mcp_<server>_<tool>`; some setups show the double `mcp__camoufox__browse`)
+- Claude Code style: `mcp__camoufox__browse`
 - OpenClaw bundle style: `camoufox__browse`
 - Raw MCP name: `browse`
 
 This skill uses raw names (`browse`, `browse_find`, ...). Map them to your host's form.
 
-In Hermes, `browser_navigate` is the built-in browser tool, not Camoufox. Use the `mcp__camoufox…` tools after `hermes mcp test camoufox` succeeds.
+In Hermes, `browser_navigate` is the built-in browser tool, not Camoufox. Use the `mcp_camoufox_*` tools after `hermes mcp test camoufox` succeeds.
 
 ## Choosing a Tool
 
