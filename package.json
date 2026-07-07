@@ -44,7 +44,7 @@
         "start": "node dist/index.js",
         "dev": "tsc --watch",
         "lint": "eslint src/",
-        "fetch:camoufox": "npx camoufox-js fetch",
+        "fetch:camoufox": "npx -y camoufox-js@0.10.2 fetch",
         "doctor": "node scripts/doctor.mjs",
         "test": "npm run test:local",
         "test:unit": "npm run build && node tests/unit_policy.mjs && node tests/unit_sqlite_shim.mjs && node tests/unit_browser_preflight.mjs",

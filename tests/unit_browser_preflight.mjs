@@ -5,7 +5,7 @@ import { MISSING_BROWSER_MESSAGE, assertBrowserBinaryAvailable } from "../dist/b
 assert.throws(
   () => assertBrowserBinaryAvailable(() => { throw new Error("Please run camoufox fetch to install"); }),
   (error) => {
-    assert.match(error.message, /camoufox-js fetch/, "error should name the fetch command");
+    assert.match(error.message, /camoufox-js(@\d+\.\d+\.\d+)? fetch/, "error should name the fetch command");
     assert.equal(error.message, MISSING_BROWSER_MESSAGE);
     return true;
   },

@@ -88,8 +88,10 @@ Two commands: install the skill, then register the MCP server (Hermes skill inst
 
 ```bash
 hermes skills install whit3rabbit/camoufox-mcp/plugins/camoufox/skills/camoufox
-hermes mcp add camoufox --command npx --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1 --args -y camoufox-mcp-server@latest
+printf "Y\n" | hermes mcp add camoufox --command npx --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1 --args -y camoufox-mcp-server@latest
 ```
+
+> **Hermes TTY Gotcha:** `hermes mcp add` interactively prompts `"Enable all 17 tools? [Y/n/select]"`. On a non-TTY (piped/scripted inputs), the default response is `"n"` (canceled). Pipe `Y\n` as shown above to enable tools automatically.
 
 Do **not** run `hermes plugins install …` for this repo. Hermes plugins are Python
 packages with a root `plugin.yaml`; this repo has neither, so it clones but is rejected
@@ -105,7 +107,7 @@ hermes mcp test camoufox
 ```
 
 First `browse` on a fresh machine needs the browser binary once (~780MB); if a call
-reports it is missing, run `npx -y camoufox-js fetch` and retry.
+reports it is missing, run `npx -y camoufox-js@0.10.2 fetch` and retry (do not omit the `@0.10.2` version pin).
 
 Restart Hermes from a separate terminal after changing MCP config. Hermes namespaces MCP
 tools as `mcp_camoufox_<tool>` (single underscore, e.g. `mcp_camoufox_browse`,
