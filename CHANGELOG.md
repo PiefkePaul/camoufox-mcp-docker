@@ -7,8 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-07-06
+
+### Fixed
+- Pinned `camoufox-js` fetch command version in npm scripts, preflight error messages, and documentation to `0.10.2` to prevent layout corruption/mismatch issues from installing the newer 0.11.x layout.
+- Added `/tmp` disk space pressure warnings and troubleshooting for `ENOSPC` errors during fetch.
+- Documented Hermes non-TTY prompt gotcha with `printf "Y\n" |` pipe instructions to prevent automated installation cancellations.
+- Added troubleshooting for stale MCP server process caching `browserAvailable: false` status at startup.
+- Documented routing rules comparing cheap host web tools vs. Camoufox.
+- Moved "Tool Names by Host" higher in documentation for better visibility.
+
+## [2.3.0] - 2026-07-06
+
 ### Added
+- CI now publishes the OpenClaw/ClawHub bundle (`@whit3rabbit/camoufox-mcp`) on tagged releases via a `publish-clawhub` job (`clawhub package validate` + `publish --family bundle-plugin` from a clean staging dir), using OIDC trusted publishing with a `CLAWHUB_TOKEN` fallback. Previously the bundle was never published, so `openclaw plugins install clawhub:@whit3rabbit/camoufox-mcp` could not resolve. Requires a one-time trusted-publisher setup on ClawHub for scope `@whit3rabbit`.
+- `llms.txt` at the repo root: a link-style install index with per-host commands (Claude Code, Codex, OpenClaw, Hermes, opencode, Pi) for coding agents.
+
+### Fixed
+- A `browse`/`snapshot`/`sequence` call on a machine without the Camoufox binary now fails fast with an actionable message naming the fix command (`npx -y camoufox-js fetch`) instead of a generic launch error. npx installs do not prefetch the ~780MB binary.
+- Rewrote the OpenClaw and Hermes install docs (README, `docs/configuration.md`): OpenClaw leads with the registry-free `openclaw mcp add …` path that works today (ClawHub install marked as post-publish); Hermes documents the two-step skill + `hermes mcp add` flow with an explicit warning not to use `hermes plugins install` (this repo has no root `plugin.yaml`, so it is rejected as an invalid plugin). Corrected the Hermes tool-name prefix to `mcp__camoufox…`.
+
+## [2.2.0] - 2026-07-04
+
+### Fixed
+- Pinned `playwright-core` as a direct dependency (`1.59.0`), not only via `overrides`. npm `overrides` bind the root project only, so `npx camoufox-mcp-server@latest` and global installs previously let `camoufox-js`'s `playwright-core: *` peer float to the latest release (1.61+), which the Camoufox Juggler rejects (`Browser.setDefaultViewport ... isMobile ... not described in this scheme`) — the published server failed to launch a browser on those install paths. The direct pin holds `playwright-core` at 1.59.0 for every install path; the `overrides` entry remains for transitive dedupe.
+
+### Added
+- `npm run doctor` preflight (`scripts/doctor.mjs`, no new deps): checks Node >=22, the exact `camoufox-js` pin, that `playwright-core` is a direct pin at the expected version, that the cached browser build matches, then drives a real `browse` to prove the browser launches. Prints the exact fix (including the cache-wipe command) for each failure.
+- Skill/docs coverage for bringing the server up and troubleshooting: a local bring-up flow in `SKILL.md`, and troubleshooting entries for corrupt/mismatched browser cache, `better-sqlite3` native-module rebuilds, and `playwright-core` drift under `npx @latest`.
+
+## [2.1.6] - 2026-07-03
+
+### Fixed
+- Eliminated `better-sqlite3` NODE_MODULE_VERSION/ABI mismatch failures when the gateway spawns the server with a different Node version than the one that installed dependencies (for example Hermes launching Node 25 via nvm against an npx cache installed under Node 22). On Node 22.15+ the server now redirects camoufox-js's `better-sqlite3` import to a shim backed by the built-in `node:sqlite` module, so the native binary is never loaded. Set `CAMOUFOX_MCP_NO_SQLITE_SHIM=1` to opt out.
+- Native module ABI errors that still occur (shim opted out or unavailable) now include an actionable hint in tool error output: the runtime Node version and path, the npx cache location (`~/.npm/_npx`), and rebuild guidance.
+
+### Changed
+- Corrected troubleshooting and skill docs that claimed `better-sqlite3` errors come from the host or gateway dependency tree — it is a transitive dependency of this server via `camoufox-js`. Documented the npx cache pitfall and added a troubleshooting entry for Cloudflare challenge pages.
+
+## [2.1.0] - 2026-06-18
+
+### Added
+- Advertised server policy in the `initialize` response under `capabilities.extensions["camoufox-mcp"].policy` (`unsafeOptionsAllowed`, `evaluateAllowed`, `captchaAutonomous`, default wait strategy and stealth profile), so clients can inspect posture without launching a browser.
+- Logged a stderr warning naming the rejected option family when unsafe browser options are sent without `CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1`.
 - Added opt-in `clickMode: "auto"` for click actions, `CAPTCHA_AUTONOMOUS=true` for LLM-assisted challenge context and provider playbooks, and network sandbox posture reporting in `camoufox_status`.
+
+### Changed
+- Defaulted `waitStrategy` to `domcontentloaded` (was `load`) across `browse` and session navigation, avoiding hangs on sites with long-lived connections. Centralized the default and the default stealth profile as config constants.
+- Corrected the plugin marketplace manifest to the current schema (top-level `description`/`version`) and documented the `/plugin marketplace add` + install flow.
 
 ### Fixed
 - Bounded `browse_sequence` with a cumulative action timeout policy and graceful fatal shutdown cleanup.

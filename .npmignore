@@ -39,3 +39,11 @@ CHANGELOG.md
 !LICENSE
 !package.json
 !dist/
+!dist/**/*
+!plugins/
+!plugins/**/*
+!.claude-plugin/
+!.claude-plugin/**/*
+!.agents/
+!.agents/plugins/
+!.agents/plugins/**/*

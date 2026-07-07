@@ -1,6 +1,6 @@
 {
     "name": "camoufox-mcp-server",
-    "version": "2.0.7",
+    "version": "2.4.0",
     "description": "MCP server for browser automation using Camoufox - a privacy-focused Firefox fork with advanced anti-detection features",
     "keywords": [
         "mcp",
@@ -22,6 +22,9 @@
     "files": [
         "dist/**/*",
         "docs/**/*",
+        "plugins/**/*",
+        ".claude-plugin/**/*",
+        ".agents/plugins/**/*",
         "README.md",
         "LICENSE"
     ],
@@ -42,22 +45,27 @@
         "start:stdio": "node dist/index.js --transport stdio",
         "start:http": "node dist/index.js --transport http",
         "dev": "tsc --watch",
-        "lint": "npx eslint src/",
-        "fetch:camoufox": "npx camoufox-js fetch",
+        "lint": "eslint src/",
+        "fetch:camoufox": "npx -y camoufox-js@0.10.2 fetch",
+        "doctor": "node scripts/doctor.mjs",
         "test": "npm run test:local",
-        "test:unit": "npm run build && node tests/unit_policy.mjs",
-        "test:local": "npm run build && python3 -B tests/test_client.py --mode local",
+        "test:unit": "npm run build && node tests/unit_policy.mjs && node tests/unit_sqlite_shim.mjs && node tests/unit_browser_preflight.mjs",
+        "test:local": "npm run build && PYTHONDONTWRITEBYTECODE=1 python3 tests/test_client.py --mode local",
         "test:camoufox": "npm run fetch:camoufox && npm run test:local",
         "test:docker": "./tests/run_tests.sh",
         "test:all": "npm run lint && npm audit && npm run test:unit && npm run fetch:camoufox && npm run test:local"
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
-        "camoufox-js": "^0.10.2",
+        "camoufox-js": "0.10.2",
         "chalk": "^5.6.2",
         "express": "^4.21.2",
-        "playwright-core": "1.53.0",
+        "playwright-core": "1.59.0",
         "zod": "^4.4.3"
+    },
+    "overrides": {
+        "js-yaml": "4.2.0",
+        "playwright-core": "1.59.0"
     },
     "devDependencies": {
         "@eslint/js": "^10.0.1",

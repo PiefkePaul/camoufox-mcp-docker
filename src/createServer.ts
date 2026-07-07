@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import { SERVER_VERSION } from "./config.js";
+import { ALLOW_EVALUATE, ALLOW_UNSAFE_OPTIONS, CAPTCHA_AUTONOMOUS, DEFAULT_STEALTH_PROFILE, DEFAULT_WAIT_STRATEGY, SERVER_VERSION } from "./config.js";
 import {
   anyOutputSchema,
   browseToolShape,
@@ -107,7 +107,27 @@ function registerJsonTool<InputArgs extends z.ZodRawShape>(
 }
 
 export function createCamoufoxServer(): McpServer {
-  const server = new McpServer({ name: "camoufox-mcp-server", version: SERVER_VERSION });
+  const server = new McpServer(
+    { name: "camoufox-mcp-server", version: SERVER_VERSION },
+    {
+      capabilities: {
+        extensions: {
+          "camoufox-mcp": {
+            policy: {
+              unsafeOptionsAllowed: ALLOW_UNSAFE_OPTIONS,
+              evaluateAllowed: ALLOW_EVALUATE,
+              captchaAutonomous: CAPTCHA_AUTONOMOUS,
+              defaultWaitStrategy: DEFAULT_WAIT_STRATEGY,
+              defaultStealthProfile: DEFAULT_STEALTH_PROFILE,
+            },
+            tools: {
+              browseSessionNavigateWaitStrategy: true,
+            },
+          },
+        },
+      },
+    },
+  );
 
   server.registerTool(
     "camoufox_status",

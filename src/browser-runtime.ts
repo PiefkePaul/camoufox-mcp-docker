@@ -1,8 +1,9 @@
 import { Camoufox, type LaunchOptions } from "camoufox-js";
+import { launchPath } from "camoufox-js/dist/pkgman.js";
 import type { Browser, BrowserContext, Page, Response, Route } from "playwright-core";
 import chalk from "chalk";
 import { parseAndValidateBrowserRequestUrl, validateBrowserRequestUrl, validateTargetUrl } from "./policy.js";
-import { GUARD_SETTLE_MS, LAUNCH_TIMEOUT_MS, MAX_CONCURRENCY, MAX_GUARDED_REQUESTS, MAX_QUEUE, QUEUE_TIMEOUT_MS, isLocaleDebugEnabled } from "./config.js";
+import { DEFAULT_WAIT_STRATEGY, GUARD_SETTLE_MS, LAUNCH_TIMEOUT_MS, MAX_CONCURRENCY, MAX_GUARDED_REQUESTS, MAX_QUEUE, QUEUE_TIMEOUT_MS, isLocaleDebugEnabled } from "./config.js";
 import { createDiagnosticsCollector } from "./diagnostics.js";
 import { browserContextOptions, buildCamoufoxOptions, validateCommonBrowserInput } from "./browser-options.js";
 import type { BrowserInstance, BrowserOperationContext, CamoufoxOptions, CommonBrowserInput, PendingBrowse, RequestGuard, SlotRelease } from "./types.js";
@@ -69,6 +70,20 @@ export async function withBrowserSlot<T>(fn: () => Promise<T>): Promise<T> {
     return await fn();
   } finally {
     release();
+  }
+}
+
+export const MISSING_BROWSER_MESSAGE =
+  "Camoufox browser binary not installed. Run: npx -y camoufox-js@0.10.2 fetch (one-time ~780MB download into the shared OS cache), then retry.";
+
+// ponytail: preflight only; a launch-time miss after this passes stays generic. `launchPath`
+// throws when the binary is absent (same probe camoufox_status uses). The default arg keeps it
+// injectable so the unit test can drive both branches without a real 780MB download.
+export function assertBrowserBinaryAvailable(probe: () => unknown = launchPath): void {
+  try {
+    probe();
+  } catch {
+    throw new Error(MISSING_BROWSER_MESSAGE);
   }
 }
 
@@ -194,8 +209,10 @@ export async function runBrowserOperation<T>(
   const targetUrl = await validateCommonBrowserInput(effectiveInput);
 
   return withBrowserSlot(async () => {
+    assertBrowserBinaryAvailable();
+
     const selectedOS = selectOperatingSystem(effectiveInput.os);
-    const waitStrategy = effectiveInput.waitStrategy ?? "load";
+    const waitStrategy = effectiveInput.waitStrategy ?? DEFAULT_WAIT_STRATEGY;
     const headlessMode = defaultHeadlessMode(effectiveInput.headless);
 
     console.error(chalk.blue(`[Camoufox] Launching browser to ${label}: ${safeUrl}`));

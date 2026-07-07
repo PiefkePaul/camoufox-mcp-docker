@@ -1,0 +1,15 @@
+{
+  "name": "camoufox-mcp",
+  "description": "Camoufox MCP browser automation plugin",
+  "version": "2.4.0",
+  "owner": {
+    "name": "followthewhit3rabbit"
+  },
+  "plugins": [
+    {
+      "name": "camoufox",
+      "source": "./plugins/camoufox",
+      "description": "Camoufox MCP browser automation tools and usage guidance"
+    }
+  ]
+}

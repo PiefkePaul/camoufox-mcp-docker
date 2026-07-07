@@ -1,5 +1,165 @@
 # Configuration for AI Assistants
 
+## Installable Agent Skill and Plugin Bundle
+
+The repository includes `plugins/camoufox/`, an installable bundle that packages:
+
+- the `camoufox` skill at `plugins/camoufox/skills/camoufox/SKILL.md`
+- the MCP config at `plugins/camoufox/.mcp.json`
+- Codex plugin metadata at `plugins/camoufox/.codex-plugin/plugin.json`
+- Claude plugin metadata at `plugins/camoufox/.claude-plugin/plugin.json`
+
+The bundled MCP server config enables unsafe browser options so the skill can use `firefox_user_prefs`, `args`, and `exclude_addons` for hard-site tuning:
+
+```json
+{
+  "mcpServers": {
+    "camoufox": {
+      "command": "npx",
+      "args": ["-y", "camoufox-mcp-server@latest"],
+      "env": {
+        "CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS": "1"
+      }
+    }
+  }
+}
+```
+
+Bare `npx -y camoufox-mcp-server@latest` remains safe by default and does not set `CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS`. After installing the bundle, verify the active state with `initialize.result.capabilities.extensions["camoufox-mcp"].policy.unsafeOptionsAllowed` or `camoufox_status.unsafeOptionsAllowed` before sending unsafe options.
+
+### Claude Code Plugin
+
+From the public GitHub repository:
+
+```text
+/plugin marketplace add whit3rabbit/camoufox-mcp
+/plugin install camoufox@camoufox-mcp
+```
+
+Or from a local clone of this repository:
+
+```text
+/plugin marketplace add /absolute/path/to/camoufox-mcp
+/plugin install camoufox@camoufox-mcp
+```
+
+Claude reads `.claude-plugin/marketplace.json`, then installs the bundle from `plugins/camoufox/`. The `camoufox` skill is auto-discovered from `plugins/camoufox/skills/`, and the MCP server is registered from `plugins/camoufox/.mcp.json`. Restart Claude Code or start a new session after installing.
+
+### Codex Plugin
+
+Codex can read the repo marketplace at `.agents/plugins/marketplace.json`.
+
+For a local clone:
+
+```bash
+codex plugin marketplace add /absolute/path/to/camoufox-mcp
+codex plugin add camoufox@camoufox-mcp
+```
+
+Restart Codex or start a new thread after installing so the bundled skill and MCP server are loaded.
+
+### OpenClaw Bundle
+
+The registry-free path works today (no publish needed). `--arg` is singular and
+repeatable; `--env` enables the unsafe-option tuning:
+
+```bash
+openclaw mcp add camoufox --command npx --arg -y --arg camoufox-mcp-server@latest --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1
+openclaw mcp list
+```
+
+Or install the published ClawHub bundle (skill + config in one step); OpenClaw detects it
+through `.codex-plugin/plugin.json` or `.claude-plugin/plugin.json`:
+
+```bash
+openclaw plugins install clawhub:@whit3rabbit/camoufox-mcp
+openclaw plugins inspect camoufox
+openclaw plugins doctor
+openclaw gateway restart
+```
+
+For a local clone, replace the ClawHub spec with `/absolute/path/to/camoufox-mcp/plugins/camoufox`.
+
+OpenClaw exposes bundled MCP tools with provider-safe names such as `camoufox__browse`.
+
+### Hermes Skill
+
+Hermes can install the skill directly from the repository path once the repo is public:
+
+```bash
+hermes skills install whit3rabbit/camoufox-mcp/plugins/camoufox/skills/camoufox
+printf "Y\n" | hermes mcp add camoufox --command npx --env CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1 --args -y camoufox-mcp-server@latest
+```
+
+Do **not** run `hermes plugins install …` for this repo: Hermes plugins are Python
+packages with a root `plugin.yaml`, which this repo does not have, so it clones but is
+rejected as "not a valid plugin." Use the skill + `hermes mcp add` commands above.
+
+Hermes skills do not automatically install MCP servers, so configure the `camoufox` MCP server separately using `hermes mcp add`. In that command, `--env` values are `KEY=VALUE`, and `--args` must be the last option with plain argv tokens. Do not pass JSON strings such as `--args '["-y", "camoufox-mcp-server@latest"]'`. In `~/.hermes/config.yaml` the `env` block must be a **mapping** (`KEY: "value"`), never a list.
+
+> **Hermes TTY Gotcha:** `hermes mcp add` interactively prompts `"Enable all 17 tools? [Y/n/select]"`. On a non-TTY (piped input/scripts), the default response is `"n"` (canceled). You must pipe `Y\n` as shown in the example command above to automatically accept and enable all tools.
+
+On a fresh machine the first `browse` needs the browser binary once (~780MB). If a call reports it is missing, run `npx -y camoufox-js@0.10.2 fetch` and retry (do not omit the version pin).
+
+The resulting config should look like this:
+
+```yaml
+mcp_servers:
+  camoufox:
+    command: npx
+    args:
+      - -y
+      - camoufox-mcp-server@latest
+    enabled: true
+    env:
+      CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS: "1"
+```
+
+For local development, copy `plugins/camoufox/skills/camoufox/` into `~/.hermes/skills/camoufox/`, run `npm install && npm run build && npm run fetch:camoufox`, then `npm run doctor` to confirm the browser launches before wiring Hermes. Use this shape instead:
+
+```yaml
+mcp_servers:
+  camoufox:
+    command: node
+    args:
+      - /absolute/path/to/camoufox-mcp/dist/index.js
+    enabled: true
+    env:
+      CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS: "1"
+```
+
+Verify and reload from a separate terminal:
+
+```bash
+hermes mcp list
+hermes mcp test camoufox
+hermes gateway restart
+```
+
+After restart, Camoufox tools appear as `mcp_camoufox_<tool>` (single underscore, e.g. `mcp_camoufox_browse`; some setups show the double-underscore form `mcp__camoufox__browse`); use whatever name your tool list shows and confirm `mcp_camoufox_camoufox_status` reports `unsafeOptionsAllowed: true`. `browser_navigate` is Hermes' built-in browser tool, not Camoufox.
+
+If Hermes reports an ambiguous `camoufox` skill, keep only one installed Camoufox skill path or load the categorized path explicitly.
+
+### Antigravity Skill
+
+Copy `plugins/camoufox/skills/camoufox/` into the desired Antigravity skill scope:
+
+```bash
+# Project scope
+mkdir -p .agents/skills
+cp -R plugins/camoufox/skills/camoufox .agents/skills/camoufox
+
+# Global Antigravity scope
+mkdir -p ~/.gemini/config/skills
+cp -R plugins/camoufox/skills/camoufox ~/.gemini/config/skills/camoufox
+
+# Antigravity CLI global scope
+mkdir -p ~/.gemini/antigravity-cli/skills
+cp -R plugins/camoufox/skills/camoufox ~/.gemini/antigravity-cli/skills/camoufox
+```
+
+Configure the MCP server in Antigravity separately with the npx command above if the host does not import plugin MCP config.
+
 <details>
 <summary>Claude Code (CLI)</summary>
 

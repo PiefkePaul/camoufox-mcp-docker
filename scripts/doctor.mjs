@@ -1,0 +1,199 @@
+#!/usr/bin/env node
+// Preflight guardrail for the Camoufox MCP server.
+// Catches the footguns that otherwise surface as cryptic runtime failures:
+// wrong Node, drifted playwright-core, a mismatched/corrupt browser cache, or a
+// dead browser. Run: `npm run doctor`. Exits nonzero on the first failure.
+//
+// No external deps on purpose: this must run before `npm install` is trusted.
+
+import { readFileSync } from "node:fs";
+import { homedir, platform } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// ponytail: single source of truth for the verified triple mirrors the
+// "Dependency & Browser Pinning" section in CLAUDE.md. Bump here + there
+// together when the gated upgrade in that section is adopted.
+const EXPECTED = {
+  camoufoxJs: "0.10.2",
+  playwrightCore: "1.59.0",
+  binaryVersion: "135.0.1",
+  binaryRelease: "beta.24",
+};
+
+const req = (p) => JSON.parse(readFileSync(join(ROOT, p), "utf8"));
+let failed = 0;
+const ok = (m) => console.log(`  ok    ${m}`);
+const fail = (m, fix) => {
+  failed++;
+  console.log(`  FAIL  ${m}`);
+  if (fix) console.log(`        -> ${fix}`);
+};
+
+// 1. Node version (matches package.json engines).
+function checkNode() {
+  const major = Number(process.versions.node.split(".")[0]);
+  if (major >= 22) ok(`Node ${process.versions.node} (>=22)`);
+  else fail(`Node ${process.versions.node} is < 22`, "use Node >=22 (see engines in package.json)");
+}
+
+// 2. camoufox-js is pinned exactly and installed at that version.
+function checkCamoufoxPin() {
+  const declared = req("package.json").dependencies["camoufox-js"];
+  if (/^[\^~><=*]/.test(declared)) {
+    fail(`camoufox-js pin "${declared}" is a range`, `pin the exact version "${EXPECTED.camoufoxJs}"`);
+    return;
+  }
+  let installed;
+  try {
+    installed = req("node_modules/camoufox-js/package.json").version;
+  } catch {
+    fail("camoufox-js is not installed", "run `npm install`");
+    return;
+  }
+  if (declared === EXPECTED.camoufoxJs && installed === EXPECTED.camoufoxJs) {
+    ok(`camoufox-js ${installed} (exact pin)`);
+  } else {
+    fail(`camoufox-js declared=${declared} installed=${installed}, expected ${EXPECTED.camoufoxJs}`, "run `npm install`");
+  }
+}
+
+// 3. playwright-core is pinned as a DIRECT dependency and installed at that version.
+// camoufox-js floats playwright-core (peer: *). `overrides` only bind the root
+// project, so they do NOT pin it for npx/global installs of this package -- those
+// would drift to the newest playwright-core, which is incompatible with the
+// Camoufox Juggler (1.61 sends `isMobile`; 1.60 breaks the private-nav guard).
+// A direct dependency is what holds the line for every install path.
+function checkPlaywright() {
+  const pkg = req("package.json");
+  const direct = pkg.dependencies["playwright-core"];
+  if (!direct) {
+    fail("playwright-core is not a direct dependency", `add "playwright-core": "${EXPECTED.playwrightCore}" to dependencies`);
+    return;
+  }
+  if (/^[\^~><=*]/.test(direct)) {
+    fail(`playwright-core dep "${direct}" is a range`, `pin the exact version "${EXPECTED.playwrightCore}"`);
+    return;
+  }
+  let installed;
+  try {
+    installed = req("node_modules/playwright-core/package.json").version;
+  } catch {
+    fail("playwright-core is not installed", "run `npm install`");
+    return;
+  }
+  if (direct === EXPECTED.playwrightCore && installed === EXPECTED.playwrightCore) {
+    ok(`playwright-core ${installed} (direct pin)`);
+  } else {
+    fail(`playwright-core dep=${direct} installed=${installed} expected=${EXPECTED.playwrightCore}`, "run `npm install`");
+  }
+}
+
+// 4. Cached browser binary matches the expected build.
+// Overlaying a new build onto an old bundle corrupts it, so a mismatch must be
+// fixed by wiping the cache, not by re-fetching over the top.
+function cacheDir() {
+  if (platform() === "darwin") return join(homedir(), "Library", "Caches", "camoufox");
+  const xdg = process.env.XDG_CACHE_HOME;
+  return join(xdg && xdg.trim() ? xdg : join(homedir(), ".cache"), "camoufox");
+}
+function checkBinary() {
+  const dir = cacheDir();
+  const wipe = platform() === "darwin"
+    ? `rm -rf "${join(dir, "Camoufox.app")}" "${join(dir, "version.json")}" && npm run fetch:camoufox`
+    : `rm -rf "${dir}" && npm run fetch:camoufox`;
+  let v;
+  try {
+    v = JSON.parse(readFileSync(join(dir, "version.json"), "utf8"));
+  } catch {
+    fail(`no cached browser at ${dir}`, "run `npm run fetch:camoufox`");
+    return;
+  }
+  if (v.version === EXPECTED.binaryVersion && v.release === EXPECTED.binaryRelease) {
+    ok(`browser ${v.version}-${v.release}`);
+  } else {
+    fail(`browser ${v.version}-${v.release}, expected ${EXPECTED.binaryVersion}-${EXPECTED.binaryRelease}`, `wipe + refetch: ${wipe}`);
+  }
+}
+
+// 5. Live smoke test: browserAvailable alone does not prove a launch works, so
+// drive a real metadata browse through JSON-RPC against the built server.
+function rpc(id, method, params) {
+  return JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
+}
+function smokeTest() {
+  return new Promise((resolve) => {
+    let dist;
+    try {
+      dist = req("package.json").bin["camoufox-mcp-server"];
+    } catch {
+      dist = "dist/index.js";
+    }
+    const distPath = join(ROOT, dist);
+    try {
+      readFileSync(distPath);
+    } catch {
+      fail(`${dist} not built`, "run `npm run build`");
+      return resolve();
+    }
+
+    const p = spawn("node", [distPath], { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    p.stdout.on("data", (d) => (out += d.toString()));
+    p.stderr.on("data", () => {});
+
+    p.stdin.write(rpc(1, "initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "doctor", version: "1.0" },
+    }));
+    setTimeout(() => p.stdin.write(rpc(2, "tools/call", { name: "camoufox_status", arguments: {} })), 800);
+    setTimeout(() => p.stdin.write(rpc(3, "tools/call", {
+      name: "browse",
+      arguments: { url: "https://example.com", waitStrategy: "domcontentloaded", outputMode: "metadata" },
+    })), 1400);
+
+    const done = () => {
+      let statusOk = false;
+      let browseOk = false;
+      for (const line of out.split("\n").filter(Boolean)) {
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+        if (msg.id === 2) {
+          const sc = msg.result?.structuredContent ?? {};
+          statusOk = sc.browserAvailable === true;
+        }
+        if (msg.id === 3) {
+          browseOk = msg.result && msg.result.isError !== true;
+        }
+      }
+      if (statusOk) ok("camoufox_status.browserAvailable = true");
+      else fail("camoufox_status did not report browserAvailable=true", "check `npm run fetch:camoufox` and server logs (`node dist/index.js`)");
+      if (browseOk) ok("browse https://example.com returned (metadata)");
+      else fail("browse smoke test did not return a non-error result", "run `node dist/index.js` and inspect stderr");
+      try { p.kill(); } catch {}
+      resolve();
+    };
+    setTimeout(done, 30000);
+    p.on("exit", () => {}); // keep the timeout as the single completion point
+  });
+}
+
+console.log("Camoufox MCP doctor\n");
+console.log("Pins & environment:");
+checkNode();
+checkCamoufoxPin();
+checkPlaywright();
+checkBinary();
+console.log("\nLive smoke test (launches the browser, ~a few seconds):");
+await smokeTest();
+
+console.log("");
+if (failed) {
+  console.log(`${failed} check(s) failed.`);
+  process.exit(1);
+}
+console.log("All checks passed.");

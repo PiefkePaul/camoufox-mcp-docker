@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./sqlite-compat.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import chalk from "chalk";
 
