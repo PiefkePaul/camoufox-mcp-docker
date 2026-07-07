@@ -6,6 +6,12 @@ An MCP (Model Context Protocol) server that provides browser automation capabili
 
 Use the published npm package unless you are developing this repository locally.
 
+### Tell your LLM
+
+```bash
+Install camoufox-mcp and the skill using this URL: https://raw.githubusercontent.com/whit3rabbit/camoufox-mcp/refs/heads/main/llms.txt
+```
+
 ### Claude Code CLI
 
 ```bash
