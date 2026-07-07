@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-07-06
+
+### Fixed
+- Pinned `camoufox-js` fetch command version in npm scripts, preflight error messages, and documentation to `0.10.2` to prevent layout corruption/mismatch issues from installing the newer 0.11.x layout.
+- Added `/tmp` disk space pressure warnings and troubleshooting for `ENOSPC` errors during fetch.
+- Documented Hermes non-TTY prompt gotcha with `printf "Y\n" |` pipe instructions to prevent automated installation cancellations.
+- Added troubleshooting for stale MCP server process caching `browserAvailable: false` status at startup.
+- Documented routing rules comparing cheap host web tools vs. Camoufox.
+- Moved "Tool Names by Host" higher in documentation for better visibility.
+
 ## [2.3.0] - 2026-07-06
 
 ### Added
