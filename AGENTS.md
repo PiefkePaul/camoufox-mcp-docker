@@ -1,5 +1,7 @@
 # AGENTS.md
 
+> **Git-Server ist Gitea (seit 16.11.2026).** Regeln zu Remote, GitHub-Sync, PRs, CI und Registry: [`GITEA.md`](GITEA.md). Sie gehen älteren Angaben in dieser Datei vor.
+
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Project Overview
