@@ -1,11 +1,59 @@
 import { z } from "zod";
 import { captchaDetectionOutputShape, diagnosticsOutputSchema, networkDiagnosticOutputSchema } from "./primitives.js";
 
+// Reused sub-schema for the per-screenshot metadata block emitted by every tool
+// that can capture a screenshot (browse, sequence, screenshot, sessions).
+const screenshotMetadataShape = {
+  requested: z.boolean(),
+  included: z.boolean(),
+  bytes: z.number().optional(),
+  maxBytes: z.number().optional(),
+  type: z.enum(["png", "jpeg"]).optional(),
+  fullPage: z.boolean().optional(),
+  // Full-page captures: measured page size, and whether the image was cut at
+  // the server's width or full-page height limit.
+  pageWidth: z.number().optional(),
+  pageHeight: z.number().optional(),
+  clipped: z.boolean().optional(),
+  selector: z.string().optional(),
+  selectorFound: z.boolean().optional(),
+  error: z.string().optional(),
+};
+
+export const screenshotMetadataOutputSchema = z.object(screenshotMetadataShape).optional();
+
+// Snapshot interactive element, reused by snapshot/sequence/session payloads.
+const snapshotElementOutputSchema = z.object({
+  tag: z.string(),
+  selector: z.string(),
+  role: z.string().optional(),
+  name: z.string().optional(),
+  text: z.string().optional(),
+  bounds: z.object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number(),
+    height: z.number(),
+  }).optional(),
+});
+
+// One step result from a sequence action run, reused by sequence/session-action.
+const sequenceActionResultOutputSchema = z.object({
+  index: z.number(),
+  type: z.string(),
+  selector: z.string().optional(),
+  status: z.literal("ok"),
+  result: z.string().optional(),
+  resultTruncated: z.boolean().optional(),
+  durationMs: z.number(),
+});
+
 export const networkSecurityOutputSchema = z.object({
   ssrfPolicy: z.literal("app_layer_best_effort"),
   sandboxMode: z.enum(["unknown", "declared", "docker", "strict-declared"]),
   sandboxDeclared: z.boolean(),
   strictSandboxRequired: z.boolean(),
+  allowedPrivateHosts: z.array(z.string()),
   warning: z.string().optional(),
 });
 
@@ -14,6 +62,14 @@ export const statusOutputSchema = z.object({
   browser: z.literal("camoufox"),
   browserAvailable: z.boolean(),
   browserPath: z.string().optional(),
+  browserCompatibility: z.object({
+    mode: z.enum(["default", "compatibility"]),
+    expectedVersion: z.string(),
+    installedVersion: z.string().optional(),
+    launcher: z.string(),
+    worldIsolationEnabled: z.boolean(),
+    warning: z.string().optional(),
+  }),
   headlessMode: z.union([z.boolean(), z.literal("virtual")]),
   platform: z.string(),
   activeBrowsers: z.number(),
@@ -136,4 +192,203 @@ export const networkSummaryOutputSchema = z.object({
   topFailures: z.array(networkDiagnosticOutputSchema),
   truncated: z.boolean(),
   ...captchaDetectionOutputShape,
+});
+
+// --- browse / snapshot / sequence -------------------------------------------------
+
+export const browseOutputSchema = z.object({
+  url: z.string(),
+  title: z.string().optional(),
+  status: z.number().optional(),
+  contentType: z.string().optional(),
+  outputMode: z.enum(["text", "html", "metadata"]),
+  truncated: z.boolean(),
+  maxChars: z.number(),
+  selector: z.string().optional(),
+  selectorFound: z.boolean().optional(),
+  text: z.string().optional(),
+  html: z.string().optional(),
+  screenshot: screenshotMetadataOutputSchema,
+  diagnostics: diagnosticsOutputSchema,
+  ...captchaDetectionOutputShape,
+});
+
+export const snapshotOutputSchema = z.object({
+  url: z.string(),
+  title: z.string().optional(),
+  status: z.number().optional(),
+  contentType: z.string().optional(),
+  selector: z.string().optional(),
+  selectorFound: z.boolean(),
+  maxChars: z.number(),
+  maxElements: z.number(),
+  text: z.string(),
+  textTruncated: z.boolean(),
+  ariaSnapshot: z.string().optional(),
+  ariaSnapshotTruncated: z.boolean().optional(),
+  ariaSnapshotError: z.string().optional(),
+  elements: z.array(snapshotElementOutputSchema),
+  elementsTruncated: z.boolean(),
+  diagnostics: diagnosticsOutputSchema,
+  ...captchaDetectionOutputShape,
+});
+
+export const sequenceOutputSchema = z.object({
+  url: z.string(),
+  title: z.string().optional(),
+  status: z.number().optional(),
+  contentType: z.string().optional(),
+  initialStatus: z.number().optional(),
+  actions: z.array(sequenceActionResultOutputSchema),
+  snapshot: z.object({
+    url: z.string(),
+    title: z.string().optional(),
+    status: z.number().optional(),
+    contentType: z.string().optional(),
+    selector: z.string().optional(),
+    selectorFound: z.boolean(),
+    maxChars: z.number(),
+    maxElements: z.number(),
+    text: z.string(),
+    textTruncated: z.boolean(),
+    ariaSnapshot: z.string().optional(),
+    ariaSnapshotTruncated: z.boolean().optional(),
+    ariaSnapshotError: z.string().optional(),
+    elements: z.array(snapshotElementOutputSchema),
+    elementsTruncated: z.boolean(),
+    diagnostics: diagnosticsOutputSchema,
+  }).optional(),
+  outputMode: z.enum(["text", "html", "metadata"]),
+  truncated: z.boolean(),
+  maxChars: z.number(),
+  selector: z.string().optional(),
+  selectorFound: z.boolean().optional(),
+  text: z.string().optional(),
+  html: z.string().optional(),
+  screenshot: screenshotMetadataOutputSchema,
+  diagnostics: diagnosticsOutputSchema,
+  ...captchaDetectionOutputShape,
+});
+
+// --- console / screenshot ---------------------------------------------------------
+
+// browse_console handler-built payload. includeNetwork defaults off, so network
+// is optional; includeConsole defaults on, so console is always present.
+export const consoleOutputSchema = z.object({
+  url: z.string(),
+  title: z.string().optional(),
+  status: z.number().optional(),
+  contentType: z.string().optional(),
+  console: z.array(z.object({
+    type: z.string(),
+    text: z.string(),
+    location: z.object({
+      url: z.string().optional(),
+      lineNumber: z.number().optional(),
+      columnNumber: z.number().optional(),
+    }).optional(),
+  })),
+  consoleTruncated: z.boolean().optional(),
+  network: z.array(networkDiagnosticOutputSchema).optional(),
+  ...captchaDetectionOutputShape,
+});
+
+// browse_screenshot handler-built payload. screenshot metadata is always present.
+export const screenshotOutputSchema = z.object({
+  url: z.string(),
+  title: z.string().optional(),
+  status: z.number().optional(),
+  contentType: z.string().optional(),
+  screenshot: z.object(screenshotMetadataShape),
+  ...captchaDetectionOutputShape,
+});
+
+// --- sessions ---------------------------------------------------------------------
+
+const sessionEnvelopeShape = {
+  sessionId: z.string(),
+  expiresAt: z.string(),
+};
+
+export const sessionStartOutputSchema = z.object({
+  sessionId: z.string(),
+  expiresAt: z.string(),
+  browser: z.literal("camoufox"),
+  selectedOS: z.string(),
+  headlessMode: z.union([z.boolean(), z.literal("virtual")]),
+  stealthProfile: z.enum(["normal", "privacy", "human_assisted", "fast", "debug"]).optional(),
+  captchaPolicy: z.enum(["detect", "pause", "fail", "attempt"]),
+});
+
+// navigate spreads a browse payload under the session envelope.
+export const sessionNavigateOutputSchema = z.object({
+  ...sessionEnvelopeShape,
+  url: z.string(),
+  title: z.string().optional(),
+  status: z.number().optional(),
+  contentType: z.string().optional(),
+  outputMode: z.enum(["text", "html", "metadata"]),
+  truncated: z.boolean(),
+  maxChars: z.number(),
+  selector: z.string().optional(),
+  selectorFound: z.boolean().optional(),
+  text: z.string().optional(),
+  html: z.string().optional(),
+  diagnostics: diagnosticsOutputSchema,
+  ...captchaDetectionOutputShape,
+});
+
+// action returns one action result plus a snapshot.
+export const sessionActionOutputSchema = z.object({
+  ...sessionEnvelopeShape,
+  action: sequenceActionResultOutputSchema,
+  snapshot: z.object({
+    url: z.string(),
+    title: z.string().optional(),
+    status: z.number().optional(),
+    contentType: z.string().optional(),
+    selector: z.string().optional(),
+    selectorFound: z.boolean(),
+    maxChars: z.number(),
+    maxElements: z.number(),
+    text: z.string(),
+    textTruncated: z.boolean(),
+    ariaSnapshot: z.string().optional(),
+    ariaSnapshotTruncated: z.boolean().optional(),
+    ariaSnapshotError: z.string().optional(),
+    elements: z.array(snapshotElementOutputSchema),
+    elementsTruncated: z.boolean(),
+    diagnostics: diagnosticsOutputSchema,
+  }),
+  ...captchaDetectionOutputShape,
+});
+
+// snapshot/resume share the same shape (envelope + snapshot + diagnostics).
+const sessionSnapshotBaseSchema = z.object({
+  ...sessionEnvelopeShape,
+  url: z.string(),
+  title: z.string().optional(),
+  status: z.number().optional(),
+  contentType: z.string().optional(),
+  selector: z.string().optional(),
+  selectorFound: z.boolean(),
+  maxChars: z.number(),
+  maxElements: z.number(),
+  text: z.string(),
+  textTruncated: z.boolean(),
+  ariaSnapshot: z.string().optional(),
+  ariaSnapshotTruncated: z.boolean().optional(),
+  ariaSnapshotError: z.string().optional(),
+  elements: z.array(snapshotElementOutputSchema),
+  elementsTruncated: z.boolean(),
+  diagnostics: diagnosticsOutputSchema,
+  ...captchaDetectionOutputShape,
+});
+
+export const sessionSnapshotOutputSchema = sessionSnapshotBaseSchema;
+export const sessionResumeOutputSchema = sessionSnapshotBaseSchema;
+
+export const sessionCloseOutputSchema = z.object({
+  sessionId: z.string(),
+  closed: z.boolean(),
 });

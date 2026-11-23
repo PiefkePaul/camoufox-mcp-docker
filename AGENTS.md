@@ -16,41 +16,53 @@ This is a TypeScript-based MCP (Model Context Protocol) server that provides bro
 ## Commands
 
 ### Development
+
+Repository builds require Node >=22.15 and the optional launcher installed with `npm install --include=optional` for its TypeScript declarations. The published default runtime supports Node >=22.0 without that launcher.
+
 - `npm run build` - Clean and compile TypeScript to dist/
 - `npm run dev` - Watch mode for TypeScript compilation
 - `npm start` - Run the compiled server
-- `npm test` - Build and run Python test client locally
-- `npm run test:unit` - Build and run deterministic policy unit tests
-- `npm run test:camoufox` - Run Camoufox-specific tests
-- `npx eslint src/` - Run ESLint for code quality checks
+- `npm run lint` - Run ESLint checks via package script (or `npx eslint src/`)
+- `npm run fetch:camoufox` - Download/fetch the Camoufox browser binaries
+- `npm run doctor` - Run preflight sanity/diagnostic checks on Node, playwright-core, and cached browser versions
+- Public package commands: `camoufox-mcp-fetch` and `camoufox-mcp-doctor`. Global installs of 2.6.0 expose them directly. Use `npx --yes --package camoufox-mcp-server@2.7.0 <command>` for npx installs. Preserve the server's compatibility flag and install-directory environment for both commands.
+- `npm test` - Build and run Python test client locally (shortcut for `npm run test:local`)
+- `npm run test:unit` - Build and run deterministic policy, sequence, snapshot, browser, and SQLite unit tests
+- `npm run test:local` - Build and run Python test client locally against the local server
+- `npm run test:camoufox` - Fetch the browser binary and run the local client tests
+- `npm run test:all` - Comprehensive quality pipeline: lint, audit, unit tests, fetch, and client tests
 
 ### Docker
 - Docker images are published by the GitHub Actions workflow for `linux/amd64`
 - Local image build: `docker buildx build --platform linux/amd64 -t camoufox-mcp .`
-- `./tests/run_tests.sh` - Run tests using Docker container
+- The browser fetch accepts an optional BuildKit `github_token` secret for GitHub API authentication. It is mounted only for that instruction; never pass it through Dockerfile `ARG` or `ENV` instructions or into browser runtime configuration.
+- `npm run test:docker` (or `./tests/run_tests.sh`) - Run tests using Docker container
 - `./tests/run_tests_local.sh` - Run tests against local server
 
 ### Testing Individual Components
 - Run Python test client directly: `python tests/test_client.py` (supports --mode docker|local)
-- Test server in Docker: `docker run --rm followthewhit3rabbit/camoufox-mcp`
+- Test server in Docker: `docker run -i --rm followthewhit3rabbit/camoufox-mcp` (`-i` is required: the server speaks MCP over stdin and exits when it closes)
+- The Python client accepts `--tests a,b` to run selected cases, `--keep-going` to report every failure, and `--no-geoip` for environments that cannot fetch the GeoIP database. It fails the run if the server writes anything but JSON-RPC to stdout.
+- `camoufox_status` is a cheap liveness check but does not launch a browser; `browserAvailable: true` does not guarantee a `browse` will launch. Confirm an actual `browse` works before trusting the browser.
+- Smoke-test the server without an MCP host via raw JSON-RPC against `node dist/index.js` (see `plugins/camoufox/skills/camoufox/references/json-rpc-debug.md`): send `initialize`, then a `browse` `tools/call`.
 
 ### ClawHub Package Publishing
-Use this when `plugins/camoufox/skills/camoufox/` or bundled plugin metadata changes and the OpenClaw package needs a new release.
+Tagged releases publish the OpenClaw bundle automatically. Use the manual clean-staging procedure below only for an explicitly requested recovery or republication.
 
 - ClawHub package: [@whit3rabbit/camoufox-mcp](https://clawhub.ai/packages/%40whit3rabbit%2Fcamoufox-mcp). OpenClaw install spec: `clawhub:@whit3rabbit/camoufox-mcp`.
-- NPM, Docker, and GitHub releases are published by CI from `v*` tags. Do not run `npm publish` locally. Bump versions, commit, tag `v<version>`, push `main` and the tag, wait for CI to publish npm, then publish the matching ClawHub package.
+- CI publishes NPM, Docker, ClawHub, and GitHub releases from `v*` tags. Do not run `npm publish` locally or duplicate the ClawHub publish after a successful tagged workflow.
 - Keep `plugins/camoufox/openclaw.plugin.json`, `plugins/camoufox/package.json`, `.codex-plugin/plugin.json`, and `.claude-plugin/plugin.json` versions aligned with the repo release version.
 - Do not publish directly from `plugins/camoufox/` if it contains generated `reports/`, `skills/camoufox/evals/`, or `skills/camoufox-workspace/`. Build a clean staging directory and publish that instead.
 - Validate before publishing. `clawhub package validate` writes `reports/` into the source folder, so validate first, then rebuild the clean staging directory for the final dry-run and publish.
+- **Run the dry-run below before every release tag, not only for recovery.** `validate` passes on layouts that `publish` rejects (it passed the bundle that failed v2.7.0 and v2.7.1). Only `publish --dry-run` on the staged directory runs the manifest check, and it needs no login or token. The CI job stages the same files, so keep the CI `cp` list and this block identical.
 
 ```bash
 clawhub package validate plugins/camoufox --json
 
 version="$(node -p 'require("./package.json").version')"
 stage="$(mktemp -d /private/tmp/camoufox-clawhub-final.XXXXXX)"
-mkdir -p "$stage/.codex-plugin" "$stage/.claude-plugin" "$stage/skills/camoufox/agents" "$stage/skills/camoufox/references"
+mkdir -p "$stage/.codex-plugin" "$stage/skills/camoufox/agents" "$stage/skills/camoufox/references"
 cp plugins/camoufox/.codex-plugin/plugin.json "$stage/.codex-plugin/plugin.json"
-cp plugins/camoufox/.claude-plugin/plugin.json "$stage/.claude-plugin/plugin.json"
 cp plugins/camoufox/.mcp.json "$stage/.mcp.json"
 cp plugins/camoufox/openclaw.plugin.json "$stage/openclaw.plugin.json"
 cp plugins/camoufox/package.json "$stage/package.json"
@@ -72,7 +84,44 @@ clawhub package publish "$stage" \
   --dry-run
 ```
 
-Publish by rerunning the same `clawhub package publish` command without `--dry-run`. Success criteria: dry-run lists only the runtime bundle files, publish returns a `releaseId`, and `clawhub package inspect @whit3rabbit/camoufox-mcp --json` reports the new `latestVersion`.
+For an authorized manual recovery, publish by rerunning the same `clawhub package publish` command without `--dry-run`. Success criteria: dry-run lists only the runtime bundle files, publish returns a `releaseId`, and `clawhub package inspect @whit3rabbit/camoufox-mcp --json` reports the new `latestVersion`. Package validation alone does not confirm installation into a target OpenClaw checkout.
+
+## Dependency & Browser Pinning
+
+- Default triple (prior 64/64 local browser-suite cases, macOS arm64; focused installer/policy checks also passed): `camoufox-js` 0.12.0 + `playwright-core` 1.59.0 + browser binary 152.0.4-beta.28. Run `npm run doctor` to verify the selected build and a real `browse`. This build predates world isolation and already runs automation in the page world. It is the default pin, not the newest upstream release. Use the matching CI run for evidence after subsequent fixes.
+- Opt-in compatibility mode (74/74 local browser-suite cases on Linux x86_64 in a container, 2026-11-21; other platforms untested on this pin): `CAMOUFOX_MCP_BROWSER_COMPATIBILITY=1` selects 158.0.1-beta.41 and the official `camoufox` 0.5.9 launcher (the renamed successor of `@camoufox/camoufox`) with its default fingerprint model. The launcher keeps its fingerprint model and GeoIP databases in its own cache directory (`~/.cache/camoufox` on Linux, following `XDG_CACHE_HOME`; `~/Library/Caches/camoufox` on macOS), which `CAMOUFOX_INSTALL_DIR` does not move. A default-mode browser install replaces that directory, so rerun the compatibility fetch afterwards. Node >=22.15 and the optional launcher are required. Keep its exact pin in `optionalDependencies` so published default installs preserve Node >=22.0 support. Use `npm install --include=optional` on a compatible Node version before enabling the mode. `disableWorldIsolation: true` restores page/iframe WebSocket interception but exposes automation JavaScript to websites. Dedicated-worker WebSockets evade routing in both modes. Keep it opt-in; see [browser compatibility](docs/browser-compatibility.md) for sources, setup, and validation status. Set the same environment for `fetch:camoufox`, doctor, and the MCP server.
+- `browser-builds.json` is the shared source for browser versions, launcher versions, and archive SHA-256 digests. When changing a browser pin, update all six official platform digests. Runtime preflight rejects a build that differs from the selected mode before launch. Installer and doctor read the same manifest.
+- **`playwright-core` MUST be a direct pinned dependency, not just an `overrides` entry.** npm `overrides` only bind the root project, so they do NOT pin `playwright-core` when this package is installed as a dependency (`npx camoufox-mcp-server@latest`, global install, or as someone else's dep). Without a direct pin, `camoufox-js`'s peer `playwright-core: *` floats and can break the Camoufox Juggler. Keep both: the direct `dependencies` pin holds every install path; the `overrides` entry dedupes the transitive copy.
+- Keep Playwright 1.59.0 until a newer version passes the full suite in the selected mode. Earlier probes found 1.60.0 broke the delayed private-navigation guard (`TypeError: Cannot read properties of undefined (reading 'url')`) and 1.61.0 sent an `isMobile` viewport option rejected by the 150 browser build. Those results do not establish compatibility with later browser builds. Re-run screenshot, navigation, and WebSocket guards before changing either pin.
+- Browser history: 135.0.1-beta.24 was the last FF135 stable. The 152.0.4-alpha builds fetched by `camoufox-js` 0.11.0/0.11.1 broke screenshots (`Page.screenshot`: `win is undefined`, daijro/camoufox#659). Beta.26 fixed that regression; the beta.28 default has prior full-suite evidence including every screenshot case.
+- Use `npm run fetch:camoufox`, which installs an exact tagged asset and verifies its SHA-256 before extraction. `camoufox-js fetch` previously selected beta.31 from the `font-bundle-v1` build-input release. That build failed private-WebSocket rejection on Playwright 1.59.0 and 1.63.0. Newer isolated builds still require the compatibility workaround; upstream issue #775 remains open.
+- Status and launch checks must only inspect the cache. Upstream `launchPath()` can trigger a download for a missing cache and write to MCP stdout; use `probeBrowserBinary()` instead. The pinned installer checks both metadata and executable completeness before skipping an install.
+- `browser-builds.json` names each mode's launcher package; the installer, doctor, and tests read the name and versions from it, so a launcher or browser bump starts there. Never overlay browser builds. The pinned installer clears the selected cache before replacing it. Compatibility mode defaults to a separate `camoufox-compatibility` sibling cache; `CAMOUFOX_INSTALL_DIR` overrides it. Preserve the default cache when testing candidate releases.
+
+## Release & Versioning
+
+Releases are tag-driven. `.github/workflows/ci.yml` runs a four-job Ubuntu 24.04 matrix: Node 22/24 with default/compatibility browser modes. Each job checks release versions, installs optional dependencies, and runs lint, audit, unit tests, pinned fetch, and the browser client suite in separate steps. In the test matrix the job token is read-only and is available only to the fetch step for upstream GitHub API requests. Pull requests build and test the `linux/amd64` Docker image in a separate read-only `docker-test` job; the publishing Docker job, whose token can write packages, runs only for `main`, tags, and manual dispatch. Workflow actions are pinned to commit SHAs and kept current by Dependabot. Local checks and configured coverage do not establish a successful GitHub Actions run.
+
+Pushing a `v*` tag additionally publishes to NPM (Trusted Publishing / OIDC), builds and pushes Docker images (Docker Hub + GHCR), publishes the ClawHub bundle, and creates a GitHub Release after the publication jobs succeed.
+
+The version string lives in seven files and **must stay in sync** (the test suite asserts `camoufox_status.version` == `package.json` version, and `SERVER_VERSION` feeds that response):
+- `package.json` (`version`)
+- `src/config.ts` (`SERVER_VERSION`)
+- `.claude-plugin/marketplace.json` (top-level `version`)
+- `plugins/camoufox/.claude-plugin/plugin.json` (`version`)
+- `plugins/camoufox/.codex-plugin/plugin.json` (`version`)
+- `plugins/camoufox/package.json` (`version` — the `@whit3rabbit/camoufox-mcp` OpenClaw bundle)
+- `plugins/camoufox/openclaw.plugin.json` (`version`)
+
+Release steps:
+1. Bump all seven version strings and both root `package-lock.json` version records to the new version. Run `node tests/check_release_versions.mjs`.
+2. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new `## [x.y.z] - YYYY-MM-DD` heading; leave a fresh empty `[Unreleased]`.
+3. Run `npm run test:all` (or at least `npm run build` + `npm run test:unit`) and commit.
+4. Run the ClawHub staging dry-run from the ClawHub section and confirm it lists the runtime files and no manifest error. Do this before tagging: a tag cannot be repaired (see Release gotchas).
+5. Refresh the pinned npx examples to the new version: `grep -rn 'camoufox-mcp-server@' README.md AGENTS.md llms.txt docs plugins/camoufox/skills`. Leave "added in 2.6.0" style mentions alone; they record when a feature shipped.
+6. Tag `vX.Y.Z` and push the tag when release publication is authorized. CI handles NPM, Docker, ClawHub, and the GitHub Release; the release body links `CHANGELOG.md`.
+
+SemVer: new tools/params or additive capabilities → minor; behavior changes to defaults are called out in the changelog `Changed` section.
 
 ## Architecture
 
@@ -113,42 +162,83 @@ Multi-stage build process:
 The `browse` tool supports extensive configuration options:
 
 ### Core Parameters
-- `url` (required): Target URL to navigate to
-- `waitStrategy`: Page load strategy (domcontentloaded, load, networkidle)
-- `timeout`: Page load timeout (5-300 seconds)
-- `outputMode`: Response content mode (text, html, metadata)
-- `maxChars`: Maximum text or HTML characters to return
-- `selector`: Optional CSS selector to limit extraction
-- `screenshot`: Capture PNG screenshot after loading
+- `url` (required): Target URL to navigate to. Must be a fully qualified http or https URL.
+- `waitStrategy`: Page load strategy (`domcontentloaded`, `load`, `networkidle`). Defaults to `domcontentloaded`.
+- `timeout`: Page load timeout in milliseconds (5,000 to 300,000 ms, default: 60,000 ms).
+- `outputMode`: Response content mode (`text`, `html`, `metadata`). Defaults to `text`.
+- `maxChars`: Maximum text or HTML characters to return (1,000 to 200,000, default: 30,000).
+- `selector`: Optional CSS selector to limit extraction to one matching element.
+- `screenshot`: Capture PNG screenshot after loading (default: false).
+- `screenshotOptions`: Optional object with screenshot configuration (`fullPage`, `selector`, `type`, `quality`).
 
 ### Privacy & Anti-Detection
-- `os`: OS spoofing (windows, macos, linux) - auto-rotates if not specified
-- `humanize`: Enable realistic cursor movements (default: true)
-- `geoip`: Auto-detect geolocation from IP (default: true)
-- `block_webrtc`: Block WebRTC entirely for privacy
-- `block_images`: Block images for faster loading
-- `block_webgl`: Block WebGL to prevent fingerprinting
-- `disable_coop`: Disable Cross-Origin-Opener-Policy
+- `os`: OS spoofing (`windows`, `macos`, `linux`) - auto-rotates if not specified.
+- `humanize`: Enable realistic cursor movements and human-like behavior (default: true).
+- `geoip`: Auto-detect geolocation based on IP address (default: true).
+- `block_webrtc`: Block WebRTC entirely for privacy (default: true).
+- `block_images`: Block all images for faster loading (default: false).
+- `block_webgl`: Block WebGL to prevent fingerprinting (default: false).
+- `disable_coop`: Disable Cross-Origin-Opener-Policy for iframe/embedded content (default: false).
+- `stealthProfile`: Shortcut configuration profile (`normal`, `privacy`, `human_assisted`, `fast`, `debug`). Explicit options override profile defaults.
+- `captchaPolicy`: CAPTCHA policy posture (`detect`, `pause`, `fail`, `attempt`).
 
 ### Browser Configuration
-- `locale`: Browser locale setting
-- `viewport`: Custom viewport dimensions
-- `headless`: Headless mode control (auto-detects if not specified)
-- `proxy`: Proxy configuration (string or object with auth)
-- `enable_cache`: Enable browser caching
-- `firefox_user_prefs`: Custom Firefox preferences
-- `exclude_addons`: Exclude default addons
-- `window`: Fixed window size
-- `args`: Additional browser arguments
+- `locale`: Browser locale setting (e.g., `en-US`).
+- `viewport`: Custom viewport dimensions object (`{width, height}`).
+- `headless`: Headless mode control (default: auto, runs virtual display `Xvfb` on Linux/Docker environments).
+- `proxy`: Proxy configuration (string or object with auth). Checked against target URL policy.
+- `enable_cache`: Enable browser caching (uses more memory but improves speed when revisiting pages).
+- `firefox_user_prefs`: Custom Firefox preferences object (rejected unless `CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1`).
+- `exclude_addons`: List of default addons to exclude (rejected unless `CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1`).
+- `window`: Fixed window size array `[width, height]`.
+- `args`: Additional browser command-line arguments (rejected unless `CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1`).
+
+## Other Specialized Browser Tools
+
+- `browse_snapshot`: Navigate once and return visible text, ARIA snapshot, and interactive elements.
+  - Extra parameters: `maxChars`, `maxElements`, `selector`.
+- `browse_sequence`: Navigate once, run a sequence of action steps (up to 25), and return final state.
+  - Actions include: `click` (supports `clickMode: "dom" | "pointer" | "auto"`), `hover`, `fill`, `type`, `select`, `press`, `waitFor`, `scroll`, and environment-gated `evaluate`.
+  - Cumulative action timeout budget is capped at `CAMOUFOX_MCP_SEQUENCE_TIMEOUT_MS`.
+- `browse_links`: Return only visible navigable links.
+  - Extra parameters: `selector`, `maxLinks`.
+- `browse_forms`: Return form fields and submit controls.
+  - Extra parameters: `selector`, `maxForms`, `maxFields`.
+- `browse_outline`: Return page headings and landmarks.
+  - Extra parameters: `selector`, `maxItems`.
+- `browse_find`: Search visible text and return matches.
+  - Extra parameters: `query`, `selector`, `maxMatches`, `contextChars`.
+- `browse_screenshot`: Dedicated screenshot tool.
+  - Extra parameters: `selector`, `fullPage`, `type`, `quality`.
+- `browse_console`: Navigate once and return console logs.
+- `browse_network_summary`: Navigate once and return network request diagnostics.
+  - Extra parameters: `maxFailures`.
+
+## Stateful Session Tools
+
+Start and manipulate isolated, short-lived browser sessions. Sessions are ephemeral, memory-only, and by default one active session is allowed per client (up to `CAMOUFOX_MCP_MAX_SESSIONS`), expiring after 10 minutes of inactivity.
+- `browse_session_start`: Start an isolated session and return a `sessionId`.
+- `browse_session_navigate`: Navigate an existing session.
+- `browse_session_action`: Run one action in an existing session.
+- `browse_session_snapshot`: Read the current visible text, ARIA snapshot, and interactive metadata.
+- `browse_session_resume`: Resume a paused session (e.g., after human solver finishes manual CAPTCHA).
+- `browse_session_close`: Close the session and release its browser slot.
 
 ## Key Implementation Details
 
 - The server validates tool calls using comprehensive Zod schemas
 - Initial URLs, final navigation URLs, and browser requests are rejected if they target localhost, private, link-local, or reserved IP space
 - Session slots are reserved before launch so concurrent starts cannot exceed `CAMOUFOX_MCP_MAX_SESSIONS`
-- Session reads/actions must surface delayed blocked requests before returning page state
+- Session reads/actions must surface delayed blocked requests before returning page state. A request aborted before it was sent is reported once and cleared (`RequestGuard.takeBlock`); a redirect hop that was already sent stays recorded until the next session navigation.
+- Route handlers do not run for redirect hops. `installRequestGuard` validates hops (including DNS) from the `request` event and `settle()`/`assertSettled()` wait for those checks; call `assertSettled()` rather than `assertAllowed()` before returning page-derived data.
+- Every page-derived read (text, snapshot, screenshot, title, challenge detection) goes through `runGuardedPageRead`, which also bounds it with `CAMOUFOX_MCP_PAGE_READ_TIMEOUT_MS`.
+- `src/stdio-guard.ts` must stay the first import of `src/index.ts`. It redirects `process.stdout` to stderr and gives the transport a private stream, because launcher dependencies print to stdout.
+- Local deadlines throw `OperationTimeoutError`. Test for the class (`isOperationTimeout`), never the message text: page code can throw any message. A session closes on timeout only when an action was abandoned mid-flight.
+- MCP cancellation reaches the runtime through `src/request-context.ts`. Read the signal synchronously at the start of an operation; Playwright callbacks inherit the launching request's context.
+- Snapshot reads allow up to three extraction attempts within 10 seconds and fail if navigation continues. Preserve the document-identity check for reloads at the same URL, and never replay actions during extraction retries.
+- A snapshot read waits for a main-frame navigation that has started but not committed, within the same 10 seconds, then re-reads the new document. It recognises the wait from playwright-core 1.59.0's call-log wording (`waiting for ... navigation to finish`); recheck `isPendingNavigationTimeout` in `src/extractors/snapshot.ts` when the Playwright pin changes. A navigation that does not commit in time returns the current document with `ariaSnapshotError`.
 - Click actions support `clickMode`: `dom` is the default CI/Xvfb-stable DOM activation path, `pointer` uses Playwright pointer input, and `auto` tries pointer first before DOM fallback.
-- `camoufox_status.networkSecurity` reports application-layer best-effort SSRF policy and conservative network sandbox posture. Docker/container detection is not proof of egress filtering.
+- `camoufox_status.networkSecurity` reports application-layer best-effort SSRF policy and conservative network sandbox posture. Dedicated-worker WebSockets evade the frame-based routing guard in both browser modes. Untrusted browsing requires actual VM, firewall, filtering proxy, or controlled container egress rules. Docker/container detection is not proof of egress filtering.
 - CAPTCHA handling is manual by default. `captchaPolicy: "attempt"` returns challenge metadata, interactive elements, a bounded screenshot, and a suggested strategy. When `CAPTCHA_AUTONOMOUS=true` is set, responses use `challengeHandling: "llm_assisted"` and include provider-specific `challengePlaybook` context when known. The server never solves CAPTCHAs itself or invokes an external skill.
 - Browser instances are created per request (not persisted)
 - Error handling includes detailed error messages for debugging
@@ -156,3 +246,52 @@ The `browse` tool supports extensive configuration options:
 - Cross-platform support with architecture-specific browser fetching
 - Screenshot capture returns base64-encoded PNG data
 - Enhanced logging with colored output for better debugging
+
+## Gotchas
+
+Each of these cost time to find. Dates and numbers are from one Linux x86_64 cloud container on 2026-11-21 unless stated.
+
+### Environment and setup
+
+- **`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` changes three things.** Cloud and CI images often set it. `npm run fetch:camoufox` then prints a skip notice and exits 0 without installing anything. `camoufox-js` also skips registering the installed uBlock Origin addon at launch and prints a notice to stdout. The server deletes the variable in `src/stdio-guard.ts`; a script that imports `camoufox-js` directly does not, so it silently runs without the addon. Unset it for the fetch (`env -u PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD npm run fetch:camoufox`) and delete it at the top of any direct probe.
+- **The default-mode fetch downloads GeoIP before the addon.** Where `api.github.com` is unreachable for the GeoLite release, the fetch throws after installing the browser and never reaches the uBlock Origin download. Launches then fail the addon preflight. Either fix network access and rerun the fetch, or install the addon alone with `maybeDownloadAddons(DefaultAddons)` from `camoufox-js/dist/addons.js`, and run the client with `--no-geoip`.
+- **Default mode does not pin uBlock Origin.** `camoufox-js` downloads `latest.xpi` from addons.mozilla.org at fetch time (1.76.6 in the measured run). Addon behaviour can therefore differ between machines and over time. Compatibility mode uses the copy inside the browser archive.
+- **A container's browser may have no route to the internet.** Behind a TLS-intercepting proxy, public HTTPS pages fail, so doctor's live smoke test fails there. The client suite needs only its local fixture server.
+- **`npm run build` deletes `dist/` first.** Running it, or `npm run test:unit`, while the client suite is running kills the server under test. Wait for the suite to finish.
+- **Scripts outside the repository cannot resolve `camoufox-js`.** Keep diagnostics under `tests/` or import by absolute path.
+
+### Browser timing
+
+- **uBlock Origin holds requests during startup in default mode.** It suspends network activity until its filter lists load, and every launch uses a fresh profile. Requests issued about 2 s to 6 s after launch were held and released together; earlier and later ones passed at once. The initial navigation is not delayed. `exclude_addons` removes the hold, and so does idling 10 s before the first load. `tests/probe_startup_request_hold.mjs` measures it; `docs/browser-compatibility.md` has the details. Do not blame the browser build or network prefs before checking this.
+- **Timers in the page still fire on time during the hold.** A `setTimeout` runs when scheduled; only the request it issues is late. Playwright's `request` event and route handler fire at the late moment too.
+- **A click can return before its navigation starts on the wire.** The snapshot read waits for it (see Key Implementation Details). Text and elements are read from the outgoing document first and discarded when the document changes.
+- **Playwright reports a pending navigation in two forms.** `waiting for navigation to finish...` before the request is known, and `waiting for" <url>" navigation to finish...` after, with no space before the quote. Match both.
+- **The pointer trial of `clickMode: "auto"` never passes under Xvfb.** It waits on Playwright's stability check until its share of the timeout ends, which is half of what remains. The DOM click gets the rest and took up to about 0.7 s. An `auto` click with a timeout near 1 s therefore fails intermittently with `Click action timed out`. Tests use 6 s; callers should not pair `auto` with short timeouts.
+
+### Tests and CI
+
+- **Never wait a fixed time for a browser-side outcome.** Poll with `_call_tool_until` or use a generous action timeout that ends early on success.
+- **A `browse_sequence` case cannot poll across calls.** To wait on a request inside one call and still exercise the failed-action path, have the page reveal a disabled control when the request settles and click it: the click waits for visibility, then fails at once on the disabled check.
+- **A prevented block is reported once.** After `takeBlock`, the next session call succeeds. A polling test must stop at the first response that carries the block.
+- **The client stops at the first failing case unless `--keep-going` is passed.** CI does not pass it, so a red job says nothing about the cases after the failure. It also does not print tool responses; drive the scenario through `MCPTestClient` in a short script to see one.
+- **The Docker test job needs the test matrix.** One red test job skips it, so a skipped Docker job is not evidence about the image.
+- **The stderr feature summary uses the caller's arguments, not the effective settings.** `geoip: disabled` appears whenever `geoip` was omitted, although GeoIP is on by default, and `WebRTC: blocked` is missing when blocking is only the default. Do not read launch settings from that line.
+- **A test that passed locally in a slow container can fail in CI and the reverse.** The auto-click case passed a full local run and failed on one of four CI jobs. Repeat a timing-sensitive case several times before calling it stable.
+
+### Release gotchas
+
+Learned releasing 2.7.0 to 2.7.2, which took three tags for one ClawHub problem.
+
+- **A tag runs the workflow file as it was at that commit.** Fixing `ci.yml` on `main` does not change an existing tag's run, and re-running its failed job uses the old file. Moving a tag is not an option: npm refuses to republish an existing version and the tag is already public.
+- **Publish jobs are not atomic.** NPM and Docker publish independently of ClawHub, and `Create Release` needs all three. A ClawHub failure leaves a version on npm and Docker with no ClawHub bundle and no GitHub Release. The only repair is a new patch version, so a failure here costs a release number. 2.7.0 and 2.7.1 are in that state.
+- **`clawhub@0.27.0` needs exactly one bundle manifest.** `.codex-plugin/plugin.json` or `.claude-plugin/plugin.json` counts; `openclaw.plugin.json` does not. Staging both plugin manifests fails, staging only `openclaw.plugin.json` fails (zero), and one plugin manifest plus `openclaw.plugin.json` passes. The error text is the same for both failures: `bundle-plugin requires exactly one supported bundle manifest`. The CLI is pinned in `ci.yml`; test any bump with the dry-run first. 2.6.0 published three manifests only because its unpinned CLI predated this check.
+- **Do not trust a fix you have not dry-run.** The first fix (#46) was reasoned from the error text and was wrong; the second was verified with `--dry-run` and worked.
+- **Prerelease checks take 15 minutes or more.** The test matrix takes about 5 minutes and the Docker job about 10 more after it. `gh pr checks <n> --watch` ends when checks finish; the Docker job is the last to report. A tag run takes a similar time, and `gh run list` can return no run for a few seconds after the push.
+- **Generated files are not release files.** `plugins/camoufox/reports/plugin-inspector-report.json` carries the version but is produced by tooling and is not checked by `tests/check_release_versions.mjs`. Leave it.
+- **Dependabot PRs can be superseded.** A release branch that already bumps the same dependency makes the open Dependabot PR obsolete; close it with a comment rather than merging both.
+
+### Dependencies
+
+- **Dependabot alerts are computed on the default branch.** A clean `npm audit` on a feature branch clears nothing until it merges. Check both: `npm audit` on the branch, and the alerts page after the merge.
+- **`npm audit` must stay at 0 before a release.** `test:all` runs it. `package-lock.json` is the only lockfile; `plugins/camoufox/package.json` declares no dependencies.
+- **The browser stack is excluded from Dependabot version updates** (`playwright-core`, `camoufox-js`, `camoufox`), because those pins are a tested set. Security advisories for them still open pull requests; treat one as a pin change and run the full browser suite in the affected mode.

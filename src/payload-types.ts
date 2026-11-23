@@ -21,6 +21,9 @@ export interface ScreenshotMetadata {
   maxBytes?: number;
   type?: ScreenshotImageType;
   fullPage?: boolean;
+  pageWidth?: number;
+  pageHeight?: number;
+  clipped?: boolean;
   selector?: string;
   selectorFound?: boolean;
   error?: string;
@@ -58,6 +61,7 @@ export interface NetworkSecurityStatus {
   sandboxMode: NetworkSandboxMode;
   sandboxDeclared: boolean;
   strictSandboxRequired: boolean;
+  allowedPrivateHosts: string[];
   warning?: string;
 }
 
@@ -66,6 +70,14 @@ export interface StatusPayload {
   browser: "camoufox";
   browserAvailable: boolean;
   browserPath?: string;
+  browserCompatibility: {
+    mode: "default" | "compatibility";
+    expectedVersion: string;
+    installedVersion?: string;
+    launcher: string;
+    worldIsolationEnabled: boolean;
+    warning?: string;
+  };
   headlessMode: HeadlessMode;
   platform: NodeJS.Platform;
   activeBrowsers: number;

@@ -12,8 +12,21 @@ export type SlotRelease = () => void;
 export type ProxyConfig = string | { server: string; username?: string; password?: string };
 
 export interface RequestGuard {
+  // Throws the recorded block, if any. Synchronous: it does not wait for
+  // redirect validations that are still resolving DNS.
   assertAllowed(): void;
-  watchPage(page: Page): void;
+  // Waits for pending redirect validations, bounded by a deadline that fails
+  // closed.
+  settle(): Promise<void>;
+  // settle() followed by assertAllowed(). Use before returning page state.
+  assertSettled(): Promise<void>;
+  // Returns the recorded block for reporting. A block that was aborted before
+  // anything was sent is cleared once reported; a block for a request the
+  // browser already issued stays until reset().
+  takeBlock(): Error | undefined;
+  // Start a new navigation in a long-lived session: clears the request budget,
+  // recorded blocks, pending validations, and the DNS cache.
+  reset(): void;
 }
 
 export interface SessionRecord {
@@ -25,6 +38,12 @@ export interface SessionRecord {
   diagnostics: DiagnosticsCollector;
   selectedOS: SupportedOs;
   waitStrategy: WaitStrategy;
+  // CAPTCHA policy persisted at session start so the documented "pause" default
+  // drives detection on every subsequent navigate/action/snapshot/resume without
+  // the caller re-passing captchaPolicy on each call.
+  captchaPolicy: CaptchaPolicy;
+  // Default navigation timeout from browse_session_start's `timeout`.
+  navigationTimeout: number;
   releaseSlot: SlotRelease;
   rawUrls: string[];
   secrets: string[];
@@ -105,9 +124,14 @@ export interface BrowserOperationContext {
   diagnostics: DiagnosticsCollector;
   selectedOS: SupportedOs;
   waitStrategy: WaitStrategy;
+  // CAPTCHA policy after the stealth profile's defaults were applied.
+  captchaPolicy: CaptchaPolicy | undefined;
   getLastNavigationResponse: () => Response | null;
 }
 
 export interface DiagnosticsCollector {
   payload(): DiagnosticsPayload | undefined;
+  // Drop collected entries. Sessions call this on each navigation so
+  // diagnostics describe the current page instead of the first one.
+  reset(): void;
 }

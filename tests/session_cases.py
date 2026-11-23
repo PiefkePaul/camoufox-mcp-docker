@@ -3,7 +3,7 @@ import subprocess
 import threading
 import time
 
-from harness import MCPTestClient, TEST_ENV
+from harness import MCPTestClient, PrivateWebSocketListener, TEST_ENV
 
 class SessionCases:
     def test_call_tool_session_flow_and_max_sessions(self):
@@ -52,6 +52,72 @@ class SessionCases:
             close_response = self._run_tool("browse_session_close", {"sessionId": session_id}, timeout=30)
             assert self.get_tool_payload(close_response)["closed"] is True
         print("CallTool session flow and max sessions test passed.")
+
+    def test_call_tool_session_tracks_action_navigation_response(self):
+        print("--- Running Test: Call Tool - Session Action Navigation Response ---")
+        start_response = self._run_tool("browse_session_start", {}, timeout=90)
+        session_id = self.get_tool_payload(start_response)["sessionId"]
+        try:
+            html = """<!doctype html>
+<html>
+<body>
+  <a id="missing" href="/missing-page">Missing page</a>
+  <iframe src="/missing-frame"></iframe>
+</body>
+</html>"""
+            navigate = self._run_tool("browse_session_navigate", {
+                "sessionId": session_id,
+                "url": self._fixture_url(html),
+                "waitStrategy": "load",
+                "maxChars": 1000
+            }, timeout=90)
+            navigate_payload = self.get_tool_payload(navigate)
+            assert navigate_payload["status"] == 200, navigate_payload
+
+            before = self._run_tool("browse_session_snapshot", {"sessionId": session_id}, timeout=90)
+            assert self.get_tool_payload(before)["status"] == 200, before
+
+            action = self._run_tool("browse_session_action", {
+                "sessionId": session_id,
+                "action": {"type": "click", "selector": "#missing"},
+                "maxChars": 1000,
+                "maxElements": 20
+            }, timeout=90)
+            first_action = self.get_tool_payload(action)
+            assert first_action["action"]["status"] == "ok", action
+            first_snapshot = first_action["snapshot"]
+            if first_snapshot["status"] == 404:
+                assert first_snapshot["url"].endswith("/missing-page"), first_snapshot
+                assert "Error response" in first_snapshot["text"], first_snapshot
+                assert "Error response" in first_snapshot.get("ariaSnapshot", ""), first_snapshot
+            else:
+                assert first_snapshot["status"] == 200, first_snapshot
+                assert first_snapshot["url"] == navigate_payload["url"], first_snapshot
+                assert "Missing page" in first_snapshot["text"], first_snapshot
+                assert "Missing page" in first_snapshot.get("ariaSnapshot", ""), first_snapshot
+            # DOM activation can return before navigation, so wait for content
+            # unique to the new document before checking response metadata.
+            # The wait ends as soon as the heading shows; the allowance covers
+            # a navigation request the browser holds during startup.
+            action = self._run_tool("browse_session_action", {
+                "sessionId": session_id,
+                "action": {"type": "waitFor", "selector": "h1", "state": "visible", "timeout": 20000},
+                "maxChars": 1000,
+                "maxElements": 20
+            }, timeout=90)
+            action_payload = self.get_tool_payload(action)
+            snapshot = action_payload["snapshot"]
+            assert snapshot["url"].endswith("/missing-page"), snapshot
+            assert snapshot["status"] == 404, snapshot
+            assert snapshot["contentType"] == "text/html;charset=utf-8", snapshot
+            assert "Error response" in snapshot["text"], snapshot
+
+            after = self._run_tool("browse_session_snapshot", {"sessionId": session_id}, timeout=90)
+            assert self.get_tool_payload(after)["status"] == 404, after
+        finally:
+            close_response = self._run_tool("browse_session_close", {"sessionId": session_id}, timeout=30)
+            assert self.get_tool_payload(close_response)["closed"] is True
+        print("CallTool session action navigation response test passed.")
 
     def test_call_tool_session_serializes_overlapping_operations(self):
         print("--- Running Test: Call Tool - Session Serializes Overlapping Operations ---")
@@ -323,6 +389,62 @@ class SessionCases:
             session_client.stop_server()
         print("CallTool concurrent session max enforcement test passed.")
 
+    def test_call_tool_session_action_failure_reports_private_host_policy(self):
+        print("--- Running Test: Call Tool - Failed Session Action Reports Private Host Policy ---")
+        # The TCP listener also records forbidden HTTP connections.
+        with PrivateWebSocketListener(self.mode) as listener:
+            hostname = "host.docker.internal" if self.mode == "docker" else "localhost"
+            private_url = listener.url.replace("ws://", "http://", 1).replace("127.0.0.1", hostname)
+            private_url += "?token=action-private-secret"
+            html = f"""<!doctype html>
+<html>
+<body>
+  <button id="load" onclick="setTimeout(() => {{
+    fetch('{private_url}').then(() => {{
+      const ready = document.createElement('p');
+      ready.id = 'ready';
+      ready.textContent = 'private resource loaded';
+      document.body.appendChild(ready);
+    }}).catch(() => {{}});
+  }}, 1800);">Load private resource</button>
+</body>
+</html>"""
+            start = self._run_tool("browse_session_start", {"geoip": False, "humanize": False}, timeout=90)
+            session_id = self.get_tool_payload(start)["sessionId"]
+            try:
+                self._run_tool("browse_session_navigate", {
+                    "sessionId": session_id,
+                    "url": self._fixture_url(html),
+                    "maxChars": 1000,
+                }, timeout=90)
+                # Arm the request after successful navigation, then wait while
+                # policy rejection prevents the element from appearing.
+                self._run_tool("browse_session_action", {
+                    "sessionId": session_id,
+                    "action": {"type": "click", "selector": "#load"},
+                    "maxChars": 1000,
+                    "maxElements": 20,
+                }, timeout=30)
+                # Each wait fails because the element never appears. Repeat it
+                # until the failure carries the policy block: the browser may
+                # hold the request well past the moment the page issued it.
+                response = self._call_tool_until("browse_session_action", {
+                    "sessionId": session_id,
+                    "action": {"type": "waitFor", "selector": "#ready", "timeout": 1000},
+                }, lambda reply: "blocked unsafe browser request" in self.get_tool_text(reply).lower(), interval=0, timeout=15)
+                assert response and response.get("result", {}).get("isError"), response
+                error = self.get_tool_text(response)
+                assert "blocked unsafe browser request" in error.lower(), error
+                assert f"CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS={hostname}" in error, error
+                assert "restart the MCP server" in error, error
+                assert "action-private-secret" not in error, error
+                assert "token=" not in error, error
+                assert not listener.connected.is_set(), listener.received
+            finally:
+                closed = self._run_tool("browse_session_close", {"sessionId": session_id}, timeout=30)
+                assert self.get_tool_payload(closed)["closed"] is True, closed
+        print("CallTool failed session action private-host guidance test passed.")
+
     def test_call_tool_session_rejects_delayed_private_request(self):
         print("--- Running Test: Call Tool - Session Reject Delayed Private Request ---")
         start_response = self._run_tool("browse_session_start", {}, timeout=90)
@@ -351,11 +473,13 @@ class SessionCases:
                 assert "not allowed" in self.get_tool_text(navigate).lower() or "blocked unsafe" in self.get_tool_text(navigate).lower()
             else:
                 assert "safe first" in self.get_tool_payload(navigate)["text"]
-                time.sleep(3.5)
-                snapshot = self._call_tool("browse_session_snapshot", {
+                # Snapshots succeed until the delayed request is issued and
+                # rejected, which the browser may defer well beyond the page's
+                # own timer. The first failing read must name the policy.
+                snapshot = self._call_tool_until("browse_session_snapshot", {
                     "sessionId": session_id,
                     "maxChars": 1000
-                }, timeout=30)
+                }, lambda reply: reply.get("result", {}).get("isError"))
                 assert snapshot and snapshot.get("result", {}).get("isError"), snapshot
                 snapshot_error = self.get_tool_text(snapshot).lower()
                 assert "not allowed" in snapshot_error or "blocked unsafe" in snapshot_error, snapshot

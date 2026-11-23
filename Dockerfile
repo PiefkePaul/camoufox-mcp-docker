@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 FROM node:22-bookworm AS builder
 
 # Install system dependencies
@@ -21,8 +23,13 @@ COPY . .
 # Build TypeScript
 RUN npm run build
 
-# Fetch the browser
-RUN npx camoufox-js fetch
+# Authenticate asset API requests during fetch without persisting credentials.
+RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN npm run fetch:camoufox
+
+# Drop dev dependencies after build so the runtime stage can copy node_modules
+# as-is. better-sqlite3 13 has no prebuilt binary for this target, so the
+# runtime slim image (no python3/gcc) cannot run its own npm ci.
+RUN npm prune --omit=dev
 
 FROM node:22-bookworm-slim AS runtime
 
@@ -36,6 +43,7 @@ ENV NODE_ENV=production \
     MCP_HTTP_SESSION_MODE=stateless
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+<<<<<<< HEAD
     xvfb \
     xauth \
     tini \
@@ -58,6 +66,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libdrm2 \
     libgbm1 \
     libatspi2.0-0 \
+=======
+    tini xvfb xauth \
+    libgtk-3-0 libx11-xcb1 libxfixes3 libxrandr2 libxtst6 libx11-6 libxcomposite1 \
+    libasound2 libdbus-glib-1-2 libpci3 libxss1 libnss3 libatk1.0-0 \
+    libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 libatspi2.0-0 \
+>>>>>>> upstream/main
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1001 myappuser
@@ -65,11 +79,14 @@ USER myappuser
 WORKDIR /home/myappuser/app
 
 COPY --from=builder /app/package.json /app/package-lock.json* ./
-RUN npm ci --omit=dev
+COPY --from=builder /app/browser-builds.json ./
+COPY --from=builder --chown=myappuser:myappuser /app/scripts ./scripts
+COPY --from=builder --chown=myappuser:myappuser /app/node_modules ./node_modules
 
 COPY --from=builder --chown=myappuser:myappuser /app/dist ./dist
 COPY --from=builder --chown=myappuser:myappuser /root/.cache/camoufox /home/myappuser/.cache/camoufox
 
+<<<<<<< HEAD
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
@@ -77,3 +94,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["xvfb-run", "-a", "--server-args=-screen 0 1280x1024x24", "node", "dist/index.js"]
+=======
+# xvfb-run is a shell script: as PID 1 it neither forwards signals nor reaps the
+# browser's orphaned children, so `docker stop` waited for the kill timeout.
+# tini does both; -g signals the whole process group so node shuts down cleanly.
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "xvfb-run", "-a", "--server-args=-screen 0 1280x1024x24", "node", "dist/index.js"]
+>>>>>>> upstream/main

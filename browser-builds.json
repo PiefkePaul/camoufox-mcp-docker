@@ -1,0 +1,31 @@
+{
+  "playwrightCore": "1.59.0",
+  "default": {
+    "version": "152.0.4",
+    "release": "beta.28",
+    "launcher": "camoufox-js",
+    "launcherVersion": "0.12.0",
+    "sha256": {
+      "lin.arm64": "3a105a2fc929e80a79b4b7fce2c93ed62c4fb2c877f3c1ed2a5d66a1c4fe968f",
+      "lin.x86_64": "924f3109ccd6d47cd6a0384d67a345fadf975d48b6319f8dbbd5954c588982bd",
+      "mac.arm64": "8b7680a61818245cf4eb0150edab811d4ed937b6723514569e74c3e7df9685bd",
+      "mac.x86_64": "6e0efd66f6db46bece072827cb2c5a4851bca822ff4fed95b8a0c2fb6f61a3d4",
+      "win.i686": "a713aca14f4ef0429eab502bacf42548fe6202bb4e29da1ca64761ed08d409af",
+      "win.x86_64": "386fc2f41139685f9a1a9cef0d024bc041d899c315ea538d561171b5b282e57d"
+    }
+  },
+  "compatibility": {
+    "version": "158.0.1",
+    "release": "beta.41",
+    "launcher": "camoufox",
+    "launcherVersion": "0.5.9",
+    "sha256": {
+      "lin.arm64": "60e25f6eb95e13d9ec655bc02913d51057e669cb31542e6ace9d2190ab5380af",
+      "lin.x86_64": "3f2eb1d0451fa58e45e43e55f5e6181565069791ae60c0574f0ceb1f01341c33",
+      "mac.arm64": "9038f86d666c9780b6fff199d488737b8596c01f24e3e517845a0ecfb0cf8add",
+      "mac.x86_64": "1afd6caa1e82caa41a4f56d8519f673e36b0835700b1c9c904e78a84c5711f3a",
+      "win.i686": "5c6b4e57764ff6caa568c6ce77a01c03c7ad5da560c3e22097def2c28235f09d",
+      "win.x86_64": "2644bd14f1cc345c768f6a70b576bcc87eb3d0bf0df54856d6fe0bbc3027515f"
+    }
+  }
+}
