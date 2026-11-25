@@ -22,8 +22,6 @@ TEST_ENV = {
     "CAMOUFOX_MCP_REQUIRE_NETWORK_SANDBOX": "0",
     "CAPTCHA_AUTONOMOUS": "false",
     "CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS": "",
-    # Fork: the Docker image defaults to MCP_TRANSPORT=http; the harness talks stdio.
-    "MCP_TRANSPORT": "stdio",
 }
 
 
@@ -250,6 +248,8 @@ class MCPTestClient:
     def start_server(self):
         self.fixture_server.start()
         server_env = dict(self.env)
+        # Fork: the Docker image defaults to MCP_TRANSPORT=http; cases with their own env still need stdio.
+        server_env.setdefault("MCP_TRANSPORT", "stdio")
         if server_env.get("CAMOUFOX_MCP_TEST_ALLOW_LOCALHOST") == "1" and "CAMOUFOX_MCP_TEST_ALLOWED_LOCALHOST_PORTS" not in server_env:
             parsed_fixture_url = urllib.parse.urlparse(self.fixture_server.base_url)
             server_env["CAMOUFOX_MCP_TEST_ALLOWED_LOCALHOST_PORTS"] = str(parsed_fixture_url.port)

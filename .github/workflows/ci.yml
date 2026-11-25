@@ -174,7 +174,9 @@ jobs:
     name: Build and Test Docker Image
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    # Fork: die Gitea-Runner (ubuntu-latest) haben keinen Docker-Daemon. Docker-Test vor dem
+    # Merge von Hand auf der NAS: python3 tests/test_client.py --mode docker --image-name <tag>
+    if: github.server_url == 'https://github.com' && github.event_name == 'pull_request'
     permissions:
       contents: read
 
