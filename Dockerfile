@@ -33,6 +33,9 @@ RUN npm prune --omit=dev
 
 FROM node:22-bookworm-slim AS runtime
 
+# Fork (Scholz/camoufox-mcp-docker): HTTP-Transport als Standard im Container.
+ENV NODE_ENV=production     MCP_TRANSPORT=http     MCP_HOST=0.0.0.0     MCP_PORT=3000     MCP_PATH=/mcp     MCP_HEALTH_PATH=/health     MCP_ENABLE_JSON_RESPONSE=true     MCP_HTTP_SESSION_MODE=stateless
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tini xvfb xauth \
     libgtk-3-0 libx11-xcb1 libxfixes3 libxrandr2 libxtst6 libx11-6 libxcomposite1 \
@@ -55,4 +58,10 @@ COPY --from=builder --chown=myappuser:myappuser /root/.cache/camoufox /home/myap
 # xvfb-run is a shell script: as PID 1 it neither forwards signals nor reaps the
 # browser's orphaned children, so `docker stop` waited for the kill timeout.
 # tini does both; -g signals the whole process group so node shuts down cleanly.
-ENTRYPOINT ["/usr/bin/tini", "-g", "--", "xvfb-run", "-a", "--server-args=-screen 0 1280x1024x24", "node", "dist/index.js"]
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3   CMD node -e "const http=require('http'); const port=Number(process.env.MCP_PORT||3000); const path=process.env.MCP_HEALTH_PATH||'/health'; const req=http.get({host:'127.0.0.1',port,path}, res => process.exit(res.statusCode===200?0:1)); req.on('error', () => process.exit(1));"
+
+# Fork: ENTRYPOINT und CMD getrennt, damit Compose das Kommando (z. B. mit Secrets-Lader davor) ersetzen kann.
+ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
+CMD ["xvfb-run", "-a", "--server-args=-screen 0 1280x1024x24", "node", "dist/index.js"]

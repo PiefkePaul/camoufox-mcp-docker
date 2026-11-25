@@ -1,6 +1,8 @@
-# Camoufox MCP Server
+# Camoufox MCP Server for NAS and Docker
 
-An MCP (Model Context Protocol) server that provides browser automation capabilities using [Camoufox](https://github.com/daijro/camoufox), a privacy-focused Firefox fork with advanced anti-detection features.
+This fork turns `camoufox-mcp` into an MCP server that can run as a long-lived Docker service on a NAS and be exposed as a remote MCP endpoint for clients such as Claude and ChatGPT.
+
+It keeps the upstream browser automation tools and security policy, and adds a network-facing HTTP mode, a health endpoint, Docker Compose support, and runtime configuration through environment variables or CLI flags.
 
 ## Quick Install
 
@@ -106,14 +108,8 @@ hermes mcp list
 hermes mcp test camoufox
 ```
 
-First `browse` on a fresh machine needs the browser binary once; download and storage
-requirements vary by platform and build. If a call
-reports it is missing, run the pinned fetch script and retry: `npm run fetch:camoufox`
-(repo checkout). npx installs can use
-`npx --yes --package camoufox-mcp-server@2.7.3 camoufox-mcp-fetch`.
-Global installs of 2.6.0 provide `camoufox-mcp-fetch` and `camoufox-mcp-doctor`.
-Do not use `camoufox-js fetch`: its release selection can install a build that
-bypasses page WebSocket interception.
+First `browse` on a fresh machine needs the browser binary once (~780MB); if a call
+reports it is missing, run `npx -y camoufox-js@0.10.2 fetch` and retry (do not omit the `@0.10.2` version pin).
 
 Restart Hermes from a separate terminal after changing MCP config. Hermes namespaces MCP
 tools as `mcp_camoufox_<tool>` (single underscore, e.g. `mcp_camoufox_browse`,
@@ -166,26 +162,6 @@ pi install npm:pi-mcp-adapter
 }
 ```
 
-### Local and private development sites
-
-Local and private hosts are blocked by default. Source builds from `main` support an explicit hostname allowlist. npm/npx installs gain this setting in the next tagged release.
-
-Add an `env` entry to your MCP server configuration:
-
-```json
-{
-  "env": {
-    "CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS": "localhost,laravel.test,app.internal"
-  }
-}
-```
-
-Restart the MCP server, then check `camoufox_status.networkSecurity.allowedPrivateHosts`. Configure DNS or hosts entries in the same container or VM as the server and browser. Corporate and custom DNS names also work when explicitly listed.
-
-For eligible private hosts, the MCP error text includes the exact allowlist setting and restart instruction. Read the full error and append the required hostname to any existing list.
-
-Entries are exact hostnames, without IP literals, wildcards, URLs, or ports. This is a server environment setting, separate from `browse` parameters and `CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS`. Metadata, link-local, and reserved addresses remain blocked. See [local development policy](docs/server-policy.md#local-development-sites) for scope.
-
 ## Try Camoufox
 
 Once configured, ask your assistant for browser work in plain language:
@@ -213,30 +189,155 @@ Use Camoufox to browse https://developer.mozilla.org with images blocked and Web
 - Cross-platform: works on Windows, macOS, and Linux, including Docker.
 - Privacy controls: SSRF protections, WebRTC blocking, WebGL blocking, image blocking, proxy support, and bounded output.
 - Session tools: short-lived isolated browser sessions with challenge pause/resume support.
+- Docker/NAS deployment: HTTP MCP endpoint, health endpoint, optional Bearer token auth, and stateless HTTP mode by default.
 
-## Requirements
+## What changed in this fork
 
-- Published default runtime: Node.js 22.0 or higher
-- Repository builds and compatibility mode: Node.js 22.15 or higher, with `npm install --include=optional`
-- Python 3.x for running tests
+- Added dual transport support:
+  - `stdio` for local desktop clients
+  - `http` for remote MCP clients and container deployments
+- Added MCP HTTP endpoint at `/mcp` with stateless mode by default and optional stateful sessions
+- Added health endpoint at `/health`
+- Added optional Bearer token protection with `MCP_AUTH_TOKEN`
+- Reworked the Docker image for long-running NAS usage
+- Added `docker-compose.yml` and `.env.example`
+- Removed the hardcoded `linux/amd64` Docker platform pin so the image can build for the active Docker target platform
+
+## Important for Claude and ChatGPT
+
+Running the server on your NAS is only one half of the setup. For Claude and ChatGPT to connect to it as a remote MCP server, the endpoint must also be reachable over public HTTPS.
+
+- ChatGPT only supports remote MCP servers, not local ones.
+- Claude remote connectors are reached from Anthropic's cloud, not from your desktop app directly.
+- A NAS endpoint that is only available inside your LAN will not be enough for those remote connectors.
+
+In practice, you usually want one of these setups:
+
+1. NAS + reverse proxy + public domain + HTTPS
+2. NAS + tunnel service + public HTTPS URL
+3. NAS behind a firewall that explicitly allows the vendor IP ranges and exposes the service publicly
+
+## Quick start on a NAS
+
+1. Copy the example environment file:
+
+```bash
+cp .env.example .env
+```
+
+2. Edit `.env`.
+
+If you want the simplest first test, leave `MCP_AUTH_TOKEN` empty and expose the server only through a trusted HTTPS endpoint.
+
+3. Build and start the service:
+
+```bash
+docker compose up -d --build
+```
+
+4. Verify the container locally on the NAS:
+
+```bash
+curl http://127.0.0.1:3000/health
+```
+
+You should get a JSON response with `"status": "ok"`.
+
+## Docker usage
+
+### Docker Compose
+
+The included `docker-compose.yml` is the recommended NAS setup.
+
+```yaml
+services:
+  camoufox-mcp:
+    build:
+      context: .
+    ports:
+      - "3000:3000"
+    environment:
+      MCP_TRANSPORT: http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 3000
+      MCP_PATH: /mcp
+      MCP_HEALTH_PATH: /health
+      MCP_HTTP_SESSION_MODE: stateless
+```
+
+### Plain Docker
+
+```bash
+docker build -t camoufox-mcp .
+docker run -d \
+  --name camoufox-mcp \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -e MCP_TRANSPORT=http \
+  -e MCP_HOST=0.0.0.0 \
+  -e MCP_PORT=3000 \
+  camoufox-mcp
+```
+
+If you explicitly want stdio behavior in a container, start it like this:
+
+```bash
+docker run -i --rm -e MCP_TRANSPORT=stdio camoufox-mcp
+```
+
+## Configuration
+
+The server can be configured through environment variables or CLI flags.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MCP_TRANSPORT` | `stdio` locally, `http` in Docker | `stdio` or `http` |
+| `MCP_HOST` | `0.0.0.0` in HTTP mode | Bind host for HTTP mode |
+| `MCP_PORT` | `3000` | Bind port for HTTP mode |
+| `MCP_PATH` | `/mcp` | MCP endpoint path |
+| `MCP_HEALTH_PATH` | `/health` | Health endpoint path |
+| `MCP_ENABLE_JSON_RESPONSE` | `true` | Enables JSON responses for compatible MCP clients |
+| `MCP_HTTP_SESSION_MODE` | `stateless` | HTTP session mode: `stateless` for ChatGPT/most remote clients, `stateful` only if a client requires persistent MCP sessions |
+| `MCP_DEBUG_LOCALE` | `false` | Logs requested and effective browser locale data for each browser operation |
+| `MCP_AUTH_TOKEN` | unset | Optional Bearer token for clients that can send static auth headers |
+| `CAMOUFOX_MCP_NETWORK_SANDBOX` | `0` | Declare that container, VM, or firewall egress controls are configured |
+| `CAMOUFOX_MCP_REQUIRE_NETWORK_SANDBOX` | `0` | Refuse startup unless network sandboxing is declared |
+
+CLI examples:
+
+```bash
+node dist/index.js --transport http --host 0.0.0.0 --port 3000 --http-session-mode stateless
+node dist/index.js --transport http --debug-locale true
+node dist/index.js --transport stdio
+```
+
+## Running modes
+
+### Local stdio mode
+
+Use this when the MCP client starts the server as a child process on the same machine.
+
+```bash
+npm run build
+npm run start:stdio
+```
+
+### Local HTTP mode
+
+Use this to test the remote MCP endpoint without Docker.
+
+```bash
+npm run build
+npm run start:http
+```
 
 ## Versioning
 
-The default pins are `camoufox-js` 0.12.0, `playwright-core` 1.59.0, and Camoufox 152.0.4-beta.28. Keep `playwright-core` as a direct pinned dependency: npm `overrides` alone do not pin it for `npx` or global installs. Run `npm run doctor` to verify the selected build and a real browser launch.
-
-Camoufox 158.0.1-beta.41 is available through opt-in compatibility mode. It restores page and iframe WebSocket interception by disabling the newer browser's world isolation, reducing stealth compared with its upstream defaults. The beta.28 default predates that isolation change. Worker WebSockets evade interception in both modes, so untrusted browsing needs network egress controls. See [browser compatibility setup and evidence](docs/browser-compatibility.md) before enabling it.
-
-| Environment variable | Default | Effect |
-| --- | --- | --- |
-| `CAMOUFOX_MCP_BROWSER_COMPATIBILITY` | Unset | Set to `1` during installation and startup to select beta.41 with reduced stealth. |
-| `CAMOUFOX_INSTALL_DIR` | OS cache, separate `camoufox-compatibility` cache when opted in | Override the browser directory; use the same value during installation and startup. |
-
-Use `npm run fetch:camoufox` for tagged downloads with SHA-256 checks. The shared [browser manifest](browser-builds.json) pins both modes. Avoid `camoufox-js fetch`, whose release selection can install a build that bypasses WebSocket interception.
+`camoufox-js` (0.10.2) and `playwright-core` (1.59.0) are pinned, fetching the Camoufox 135.0.1-beta.24 browser build. `playwright-core` is a **direct** pinned dependency (not just an `overrides` entry) because npm `overrides` only bind the root project: without a direct pin, `npx`/global installs let `camoufox-js`'s peer float `playwright-core` to the latest, and `playwright-core` 1.60+ is incompatible with the Camoufox browser (1.60 breaks a navigation guard; 1.61 sends an `isMobile` viewport option Firefox/Camoufox rejects). The pins are the newest combination that passes the full test suite. Run `npm run doctor` to check them end-to-end, and do not loosen them without re-running `npm run test:all`.
 
 ## Documentation
 
 - [Configuration for AI assistants](docs/configuration.md)
-- [Browser compatibility](docs/browser-compatibility.md)
 - [Usage examples](docs/examples.md)
 - [Tool parameters](docs/tool-parameters.md)
 - [Server policy](docs/server-policy.md)
@@ -244,20 +345,60 @@ Use `npm run fetch:camoufox` for tagged downloads with SHA-256 checks. The share
 - [Troubleshooting](docs/troubleshooting.md)
 - [Privacy and security](docs/privacy-security.md)
 
+## Reverse proxy notes
+
+If you place the service behind Nginx, Caddy, Traefik, Synology reverse proxy, or a tunnel, keep these points in mind:
+
+- Expose the MCP endpoint over HTTPS
+- Forward `Authorization` headers unchanged if you use `MCP_AUTH_TOKEN`
+- If you run `MCP_HTTP_SESSION_MODE=stateful`, forward `mcp-session-id` headers unchanged
+- Do not buffer streaming responses on the MCP endpoint
+- In `stateless` mode, forwarding `POST` is enough
+- In `stateful` mode, forward `GET`, `POST`, and `DELETE` to the same MCP path
+
+## Troubleshooting
+
+### The NAS container starts, but Claude or ChatGPT cannot connect
+
+Usually this means one of these:
+
+- the server is not publicly reachable over HTTPS
+- the reverse proxy does not forward the required methods to the MCP path
+- the proxy strips the `Authorization` or `mcp-session-id` header
+- the proxy buffers the response stream
+- the firewall blocks traffic from the vendor cloud
+
+### ChatGPT says the `browse` schema is invalid
+
+If ChatGPT rejects the connector with an error mentioning `window` and `items`, you are most likely running an older image that still exposes `window` as a tuple array.
+
+Use the updated image and pass `window` like this:
+
+```json
+{
+  "window": {
+    "width": 1280,
+    "height": 720
+  }
+}
+```
+
+### ChatGPT or another remote client works once, then the tool disappears
+
+That usually points to session handling on the remote client side rather than the browser automation itself.
+
+This fork defaults HTTP mode to `MCP_HTTP_SESSION_MODE=stateless`, which is the safest setting for ChatGPT-style remote MCP connectors.
+
+### Debugging locale mismatches
+
+If a client claims it sent `de-DE` or `fr-FR`, but the page reports something else, enable:
+
+```bash
+MCP_DEBUG_LOCALE=true
+```
+
+Each browser operation will then log the raw requested locale and the effective browser locale values reported by the page.
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
-
-## Contributing
-
-Contributions are welcome. Please submit a pull request or open an issue for bugs and feature requests.
-
-## Acknowledgments
-
-- Built with [Camoufox](https://github.com/daijro/camoufox)
-- Uses the [Model Context Protocol](https://modelcontextprotocol.io/)
-- Powered by [Playwright](https://playwright.dev/)
-
-## Support
-
-If you encounter issues, check [Troubleshooting](docs/troubleshooting.md) first, then open an issue on GitHub with logs and environment details.

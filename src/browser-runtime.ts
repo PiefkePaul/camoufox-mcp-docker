@@ -2,7 +2,7 @@ import { Camoufox, type LaunchOptions } from "camoufox-js";
 import type { Browser, BrowserContext, Page, Response, Route } from "playwright-core";
 import chalk from "chalk";
 import { isLoopbackNavigationError, normalizeHostname, parseAndValidateBrowserRequestUrl, resolveSystemHost, validateBrowserRequestUrl, validateTargetUrl, type HostResolver } from "./policy.js";
-import { ALLOWED_PRIVATE_HOSTS, BROWSER_CLOSE_TIMEOUT_MS, DEFAULT_WAIT_STRATEGY, GUARD_DNS_CACHE_TTL_MS, GUARD_SETTLE_DEADLINE_MS, GUARD_SETTLE_MS, LAUNCH_TIMEOUT_MS, MAX_CONCURRENCY, MAX_GUARDED_REQUESTS, MAX_QUEUE, PAGE_READ_TIMEOUT_MS, QUEUE_TIMEOUT_MS } from "./config.js";
+import { ALLOWED_PRIVATE_HOSTS, BROWSER_CLOSE_TIMEOUT_MS, DEFAULT_WAIT_STRATEGY, GUARD_DNS_CACHE_TTL_MS, GUARD_SETTLE_DEADLINE_MS, GUARD_SETTLE_MS, LAUNCH_TIMEOUT_MS, MAX_CONCURRENCY, MAX_GUARDED_REQUESTS, MAX_QUEUE, PAGE_READ_TIMEOUT_MS, QUEUE_TIMEOUT_MS, isLocaleDebugEnabled } from "./config.js";
 import { RequestCancelledError, currentRequestSignal, throwIfCancelled } from "./request-context.js";
 import { createDiagnosticsCollector } from "./diagnostics.js";
 import { browserContextOptions, buildCamoufoxOptions, validateCommonBrowserInput } from "./browser-options.js";
@@ -325,6 +325,17 @@ export async function runBrowserOperation<T>(
     const headlessMode = defaultHeadlessMode(effectiveInput.headless);
 
     console.error(chalk.blue(`[Camoufox] Launching browser to ${label}: ${safeUrl}`));
+    if (isLocaleDebugEnabled()) {
+      console.error(
+        chalk.magenta(
+          `[Camoufox] Locale debug input: ${JSON.stringify({
+            requestedLocale: effectiveInput.locale ?? null,
+            geoip: effectiveInput.geoip,
+            os: selectedOS,
+          })}`,
+        ),
+      );
+    }
 
     const browser = await launchCamoufoxBrowser(buildCamoufoxOptions(effectiveInput, selectedOS, headlessMode));
     activeBrowsers.add(browser);
@@ -359,6 +370,27 @@ export async function runBrowserOperation<T>(
       } catch (navigationError) {
         await requestGuard.assertSettled();
         throw describeNavigationFailure(navigationError, targetUrl, safeUrl);
+      }
+
+      if (isLocaleDebugEnabled()) {
+        try {
+          const localeSnapshot = await page.evaluate(() => ({
+            navigatorLanguage: navigator.language,
+            navigatorLanguages: navigator.languages,
+            intlLocale: Intl.DateTimeFormat().resolvedOptions().locale,
+            htmlLang: document.documentElement?.lang ?? null,
+          }));
+          console.error(
+            chalk.magenta(
+              `[Camoufox] Locale debug effective: ${JSON.stringify({
+                requestedLocale: effectiveInput.locale ?? null,
+                ...localeSnapshot,
+              })}`,
+            ),
+          );
+        } catch (localeDebugError) {
+          console.error(chalk.yellow(`[Camoufox] Locale debug failed: ${describeError(localeDebugError)}`));
+        }
       }
 
       return await callback({

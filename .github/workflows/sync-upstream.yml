@@ -1,0 +1,184 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  UPSTREAM_REPO: https://github.com/whit3rabbit/camoufox-mcp.git
+  UPSTREAM_BRANCH: main
+  SYNC_BRANCH: automation/upstream-sync
+
+jobs:
+  sync:
+    name: Sync with upstream repository
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out fork main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream main
+        run: |
+          git remote add upstream "${UPSTREAM_REPO}" || git remote set-url upstream "${UPSTREAM_REPO}"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+
+      - name: Check if upstream has new commits
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          AHEAD_COUNT="$(git rev-list --count HEAD..upstream/${UPSTREAM_BRANCH})"
+          echo "ahead_count=${AHEAD_COUNT}" >> "${GITHUB_OUTPUT}"
+          if [ "${AHEAD_COUNT}" -eq 0 ]; then
+            echo "has_updates=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_updates=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Stop when nothing changed upstream
+        if: steps.check.outputs.has_updates == 'false'
+        run: echo "No upstream updates to sync."
+
+      - name: Prepare sync branch
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          git checkout -B "${SYNC_BRANCH}" origin/main
+
+      - name: Merge upstream into sync branch
+        if: steps.check.outputs.has_updates == 'true'
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git merge --no-ff --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+            echo "conflict=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          CONFLICT_FILES="$(git diff --name-only --diff-filter=U)"
+          if [ -z "${CONFLICT_FILES}" ]; then
+            # Merge failed for a reason other than content conflicts.
+            git merge --abort || true
+            exit 1
+          fi
+
+          {
+            echo "conflict=true"
+            echo "conflict_files<<FILES_EOF"
+            echo "${CONFLICT_FILES}"
+            echo "FILES_EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+          git add -A
+          git commit --no-verify -m "Merge upstream/${UPSTREAM_BRANCH} (unresolved conflicts, contains conflict markers)"
+
+      - name: Push sync branch
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          git push --force-with-lease origin "${SYNC_BRANCH}"
+
+      - name: Create or update pull request
+        if: steps.check.outputs.has_updates == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONFLICT: ${{ steps.merge.outputs.conflict }}
+          CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+        run: |
+          set -euo pipefail
+          PR_NUMBER="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base main \
+            --head "${SYNC_BRANCH}" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [ -n "${PR_NUMBER}" ]; then
+            echo "Existing sync PR #${PR_NUMBER} was updated by the branch push."
+            if [ "${CONFLICT}" = "true" ]; then
+              gh pr ready --undo "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" || true
+              gh pr comment "${PR_NUMBER}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --body "$(printf 'The latest upstream sync hit merge conflicts. The branch now contains conflict markers in:\n\n```\n%s\n```\n\nResolve the markers, push, and mark the PR ready for review.' "${CONFLICT_FILES}")"
+            fi
+            exit 0
+          fi
+
+          if [ "${CONFLICT}" = "true" ]; then
+            PR_TITLE="Sync upstream changes (merge conflicts - manual resolution required)"
+            DRAFT_FLAG="--draft"
+            PR_BODY="$(cat <<EOF
+          ## What this PR does
+
+          This automated PR merges the latest changes from \`whit3rabbit/camoufox-mcp\` into this fork.
+
+          **The merge produced conflicts.** The branch contains the merge commit **with unresolved conflict markers** in these files:
+
+          \`\`\`
+          ${CONFLICT_FILES}
+          \`\`\`
+
+          ## How to resolve
+
+          1. Check out \`${SYNC_BRANCH}\`
+          2. Resolve the conflict markers in the files listed above
+          3. Commit, push, and mark this PR ready for review once CI is green
+
+          CI is expected to fail until the conflict markers are resolved.
+          EOF
+          )"
+          else
+            PR_TITLE="Sync upstream changes from whit3rabbit/camoufox-mcp"
+            DRAFT_FLAG=""
+            PR_BODY="$(cat <<'EOF'
+          ## What this PR does
+
+          This automated PR merges the latest changes from `whit3rabbit/camoufox-mcp` into this fork.
+
+          ## Safety
+
+          - Upstream changes are never pushed directly to `main`
+          - Your existing CI runs on this PR before anything is merged
+          - Docker publishing still only happens after this PR is merged into `main`
+
+          ## What to review
+
+          - Check whether upstream touched files we customized for Docker and remote MCP hosting
+          - Verify CI is green
+          - Merge only if the changes look safe
+          EOF
+          )"
+          fi
+
+          gh pr create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base main \
+            --head "${SYNC_BRANCH}" \
+            --title "${PR_TITLE}" \
+            --body "${PR_BODY}" \
+            ${DRAFT_FLAG}
+
+      - name: Report merge conflict
+        if: steps.merge.outputs.conflict == 'true'
+        run: |
+          echo "::warning::Upstream sync hit merge conflicts. A draft PR with conflict markers was opened or updated for branch ${SYNC_BRANCH}."

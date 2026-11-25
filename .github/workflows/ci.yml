@@ -10,8 +10,9 @@ on:
   workflow_dispatch:
 
 env:
-  DOCKER_REPO: followthewhit3rabbit/camoufox-mcp
-  GHCR_REPO: ghcr.io/${{ github.repository_owner }}/camoufox-mcp
+  DOCKER_REPO: piefkepaul/camoufox-mcp-docker
+  GHCR_REPO: ghcr.io/${{ github.repository_owner }}/camoufox-mcp-docker
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
@@ -210,7 +211,8 @@ jobs:
     name: Build and Publish Docker Images
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
+    # Fork: Images baut nur der GitHub-Spiegel (Docker Hub piefkepaul/camoufox-mcp-docker), nicht Gitea.
+    if: github.server_url == 'https://github.com' && github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
@@ -224,8 +226,8 @@ jobs:
     - name: Log in to Docker Hub
       uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
       with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+        username: piefkepaul
+        password: ${{ secrets.DOCKER_PASSWORD }}
 
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
