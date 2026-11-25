@@ -64,7 +64,8 @@ jobs:
 
     - name: Fetch verified browser assets (${{ matrix.browser-mode }})
       env:
-        GITHUB_TOKEN: ${{ github.token }}
+        # Fork: in Gitea ist github.token ein Gitea-Token; an api.github.com geschickt scheitert der Abruf.
+        GITHUB_TOKEN: ${{ github.server_url == 'https://github.com' && github.token || '' }}
       run: npm run fetch:camoufox
       timeout-minutes: 10
 
