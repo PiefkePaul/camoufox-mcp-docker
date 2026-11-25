@@ -374,12 +374,13 @@ export async function runBrowserOperation<T>(
 
       if (isLocaleDebugEnabled()) {
         try {
-          const localeSnapshot = await page.evaluate(() => ({
+          // Diagnostics only: bounded so a busy page cannot stall the browse.
+          const localeSnapshot = await withTimeout(page.evaluate(() => ({
             navigatorLanguage: navigator.language,
             navigatorLanguages: navigator.languages,
             intlLocale: Intl.DateTimeFormat().resolvedOptions().locale,
             htmlLang: document.documentElement?.lang ?? null,
-          }));
+          })), 2_000, "Locale debug snapshot");
           console.error(
             chalk.magenta(
               `[Camoufox] Locale debug effective: ${JSON.stringify({

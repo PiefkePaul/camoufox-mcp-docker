@@ -191,8 +191,9 @@ jobs:
         push: false
         load: true
         tags: camoufox-mcp-server:ci
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        # Fork: gha-Cache gibt es nur auf GitHub, nicht in Gitea Actions.
+        cache-from: ${{ github.server_url == 'https://github.com' && 'type=gha' || '' }}
+        cache-to: ${{ github.server_url == 'https://github.com' && 'type=gha,mode=max' || '' }}
         secrets: |
           github_token=${{ github.token }}
 

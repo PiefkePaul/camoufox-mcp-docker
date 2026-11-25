@@ -22,6 +22,8 @@ TEST_ENV = {
     "CAMOUFOX_MCP_REQUIRE_NETWORK_SANDBOX": "0",
     "CAPTCHA_AUTONOMOUS": "false",
     "CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS": "",
+    # Fork: the Docker image defaults to MCP_TRANSPORT=http; the harness talks stdio.
+    "MCP_TRANSPORT": "stdio",
 }
 
 
