@@ -8,14 +8,15 @@ issues below in one command.
 ### Common Issues
 
 1. **"Camoufox browser not found" or `browserAvailable: false` after fetch**
-   - Run `npm run fetch:camoufox` or `npx -y camoufox-js@0.10.2 fetch` to download the browser. Do **not** omit the `@0.10.2` version pin (a bare `camoufox-js fetch` pulls the latest version, which writes a layout the MCP server cannot read).
+   - From a checkout, run `npm run fetch:camoufox`. Global installs of 2.6.0 provide `camoufox-mcp-fetch`. Use `npx --yes --package camoufox-mcp-server@2.7.3 camoufox-mcp-fetch` for npx installs. Avoid `camoufox-js fetch`: the package's pinned installer selects a tagged, checksummed build.
    - For Docker, the browser is pre-installed.
    - If the browser is downloaded but status still reports it is missing:
-     - **Stale MCP Server Process:** The daemon/gateway process cached the false answer at startup. Restart the daemon/gateway, or remove and re-add the server (e.g., `hermes mcp remove camoufox && hermes mcp add ...`).
-     - **Mismatched Directory Layout:** If you fetched without a version pin, you may have the wrong folder layout. Clear the cache and refetch using the pinned version (see item 10).
+     - **Environment mismatch:** Status inspects the cache on each call. Use the same `CAMOUFOX_INSTALL_DIR` and `CAMOUFOX_MCP_BROWSER_COMPATIBILITY` values for fetch, doctor, and the host's MCP process. Restart the host after changing those environment values.
+     - **Wrong build or incomplete cache:** Re-run the pinned installer with the host's environment. It repairs missing assets and replaces mismatched browser builds (see item 10).
 
 2. **"Cannot find module"**
-   - Ensure you've run `npm install` or are using npx
+   - Repository builds require Node.js >=22.15 and `npm install --include=optional`; the published default runtime supports Node.js >=22.0.
+   - Compatibility mode requires the optional `camoufox` launcher. If npm skipped it, use Node.js >=22.15 and reinstall with `--include=optional` before enabling `CAMOUFOX_MCP_BROWSER_COMPATIBILITY=1`.
    - For global install: `npm install -g camoufox-mcp-server@latest`
 
 3. **"MCP server not responding"**
@@ -58,20 +59,31 @@ issues below in one command.
    - Session tools support challenge pause/resume so a human can complete an interactive challenge when needed
 
 10. **Browser fails to launch / `Library not loaded: @rpath/libmozglue.dylib` after changing binary versions**
-    - Overlaying a new browser build onto an old cached bundle corrupts it. Wipe the cache, then refetch; do not fetch over the top:
-      `rm -rf ~/Library/Caches/camoufox/Camoufox.app ~/Library/Caches/camoufox/version.json && npx -y camoufox-js@0.10.2 fetch`
-    - Linux/Docker cache path: `rm -rf ~/.cache/camoufox && npx -y camoufox-js@0.10.2 fetch` (respects `XDG_CACHE_HOME`)
-    - `npm run doctor` reports a version/build mismatch and prints the wipe command
+    - Overlaying browser builds can corrupt the cached bundle. The pinned installer clears the selected cache when replacing a build. Run `npm run fetch:camoufox` with the same environment as the server.
+    - Default caches are `~/Library/Caches/camoufox` on macOS and `~/.cache/camoufox` on Linux. Compatibility mode uses a `camoufox-compatibility` sibling unless `CAMOUFOX_INSTALL_DIR` is set. `XDG_CACHE_HOME` does not select the browser directory. On Windows the compatibility sibling is `%LOCALAPPDATA%\\camoufox\\camoufox\\Cache-compatibility`.
+    - "Compatibility fingerprint model is missing" or "GeoIP database is missing" after installing or repairing the default browser: The launcher keeps its fingerprint model and GeoIP databases in its own cache directory (`~/.cache/camoufox` on Linux, following `XDG_CACHE_HOME`; `~/Library/Caches/camoufox` on macOS), which `CAMOUFOX_INSTALL_DIR` does not move. A default-mode browser install replaces that directory, so rerun the compatibility fetch afterwards.
+    - If metadata matches but libraries are corrupt, stop the MCP process, remove or move aside that exact cache directory, and run the pinned installer again. `npm run doctor` reports which directory and build it expects.
 
 11. **`Browser.setDefaultViewport ... isMobile ... not described in this scheme`, or anti-detection regressed after `npx @latest`**
-    - `camoufox-js` floats `playwright-core` (peer `*`). This package pins `playwright-core` as a direct dependency, but npm `overrides` alone would not: they bind only the root project, so a raw `npx`/global install can still pull a newer `playwright-core` than the Camoufox browser supports
-    - A `playwright-core` too new for the browser build breaks the Juggler protocol (1.61+ sends an `isMobile` viewport field the browser rejects; 1.60 breaks a navigation guard). Match the pair; do not bump one alone
+    - This package pins `playwright-core` directly at 1.59.0 for checkout, npx, and global installs. An `overrides` entry alone would only constrain a root project and cannot replace the direct pin.
+    - Earlier probes with older browser builds found Playwright 1.60 broke a navigation guard and 1.61 sent an unsupported `isMobile` field. Those results do not prove compatibility with beta.33. Keep the selected browser/launcher/Playwright pins together and test before changing them.
     - On a checkout, `npm run doctor` fails if `playwright-core` drifted off the pin
 
 12. **`Error: ENOSPC: no space left on device, write` or partial-install errors during fetch**
-    - The ~780MB binary download extracts via `/tmp/camoufox-*` temporary directories.
-    - On hosts with limited `/tmp` space (such as cloud VMs or containers where `/tmp` is a `tmpfs` capped at 1-2GB), failed attempts leave behind ~680MB temp directories that fill the filesystem.
-    - **Fix:** Clear the temporary directories: `rm -rf /tmp/camoufox-*` (only do this if no live Camoufox processes are running), then retry the fetch command.
+    - Fetching needs space for the compressed archive, extracted browser, and supporting assets. Requirements vary by platform and build.
+    - Check available space in the install directory and OS temporary directory. Failed downloads can leave installer scratch directories behind, especially on hosts with a small temporary filesystem.
+    - Inspect those directories and confirm each is abandoned and unused by a live installer before removing that exact directory. Retry the pinned fetch after freeing space.
+
+13. **"Local hostnames are not allowed" or "URL host resolves to a private, local, or reserved address" for a development site**
+    - Source builds from `main` support `CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS`; npm/npx installs gain it in the next tagged release. For ordinary private-host DNS results, the denial error gives the exact environment setting for that hostname.
+    - Set a comma-separated list such as `CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS=localhost,laravel.test,app.internal` in the MCP server's environment, then restart it. Exact names work for `.test`, `.local`, `.internal`, corporate, and custom DNS hosts. Add each asset hostname separately.
+    - Check `camoufox_status.networkSecurity.allowedPrivateHosts` after restart. This is not a `browse` parameter, and `CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1` does not enable it. Entries cannot contain IP literals, wildcards, URLs, or ports.
+    - Resolve the hostname from the same container or VM as the server and browser. Fix DNS or hosts entries for "Could not resolve URL host". Container `localhost` refers to the container, so allowlisting alone cannot reach a host-side server.
+    - Metadata, link-local, AWS local-services, and reserved addresses remain blocked even for allowlisted names. These denials cannot be fixed with this setting. See [local development sites](server-policy.md#local-development-sites) for address scope.
+
+14. **A click or late request in the first seconds after launch takes several seconds**
+    - In default mode uBlock Origin holds requests issued shortly after launch until its filter lists have loaded, then releases them together. The initial navigation is not affected. See [requests held while uBlock Origin starts](browser-compatibility.md#requests-held-while-ublock-origin-starts).
+    - `browse_session_action` and `browse_session_snapshot` wait for a navigation that has started, up to their 10-second snapshot deadline. If the result still shows the old page with `ariaSnapshotError` mentioning "navigation to finish", take another snapshot or use a `waitFor` action for content on the new page. Do not repeat the click.
 
 ### Debug Mode
 

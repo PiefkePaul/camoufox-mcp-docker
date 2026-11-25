@@ -51,7 +51,8 @@ class SequenceCases:
         response = self._run_sequence({
             "url": self._fixture_url(html),
             "actions": [
-                {"type": "click", "selector": "#target", "clickMode": "auto", "timeout": 3000}
+                # See the fallback case below for why the timeout is generous.
+                {"type": "click", "selector": "#target", "clickMode": "auto", "timeout": 6000}
             ],
             "maxChars": 2000
         }, timeout=90)
@@ -80,7 +81,11 @@ class SequenceCases:
         response = self._run_sequence({
             "url": self._fixture_url(html),
             "actions": [
-                {"type": "click", "selector": "#target", "clickMode": "auto", "timeout": 1000}
+                # One timeout covers the pointer trial and the DOM click. The
+                # trial may use half of it, and under Xvfb it never passes. The
+                # DOM click then took up to about 0.7 s in measurement, more
+                # than a 1 s timeout leaves it.
+                {"type": "click", "selector": "#target", "clickMode": "auto", "timeout": 6000}
             ],
             "maxChars": 2000
         }, timeout=90)
@@ -134,7 +139,11 @@ class SequenceCases:
         print("--- Running Test: Call Tool - Browse Sequence Rejects Timeout Budget ---")
         response = self._call_tool("browse_sequence", {
             "url": "https://example.com",
+            # 5 x 60000 = 300000ms, above the 250000ms default budget
+            # (CAMOUFOX_MCP_SEQUENCE_TIMEOUT_MS) with the max per-action timeout.
             "actions": [
+                {"type": "waitFor", "timeout": 60000},
+                {"type": "waitFor", "timeout": 60000},
                 {"type": "waitFor", "timeout": 60000},
                 {"type": "waitFor", "timeout": 60000},
                 {"type": "waitFor", "timeout": 60000}
@@ -179,6 +188,35 @@ class SequenceCases:
         assert response and response.get("result", {}).get("isError"), f"Private sequence redirect was not rejected: {response}"
         assert "blocked unsafe browser request" in self.get_tool_text(response).lower()
         print("CallTool sequence private redirect rejection test passed.")
+
+    def test_call_tool_sequence_failure_reports_private_host_policy(self):
+        print("--- Running Test: Sequence Failure Reports Private Host Policy ---")
+        # The request is issued after the first action's guard check, and the
+        # browser may hold it for seconds. The second action therefore waits on
+        # the request itself: the disabled control appears only once the fetch
+        # has settled, and clicking a disabled control fails at once.
+        html = """<!doctype html>
+<html>
+<body>
+  <button id="arm" onclick="setTimeout(() => fetch('http://blocked.localhost:80/private?token=sequence-policy-secret#fragment').catch(() => {}).finally(() => { document.getElementById('settled').hidden = false; }), 1500)">Arm request</button>
+  <button id="settled" disabled hidden>Request settled</button>
+</body>
+</html>"""
+        response = self._call_tool("browse_sequence", {
+            "url": self._fixture_url(html),
+            "actions": [
+                {"type": "click", "selector": "#arm"},
+                {"type": "click", "selector": "#settled", "timeout": 30000},
+            ],
+            "geoip": False,
+        }, timeout=90)
+        assert response and response.get("result", {}).get("isError"), response
+        error = self.get_tool_text(response)
+        assert "blocked unsafe browser request" in error.lower(), response
+        assert "CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS=blocked.localhost" in error, response
+        assert "restart" in error.lower(), response
+        assert "sequence-policy-secret" not in error and "#fragment" not in error, response
+        print("Sequence failed-action policy guidance test passed.")
 
     def test_call_tool_sequence_rejects_evaluate_by_default(self):
         print("--- Running Test: Call Tool - Browse Sequence Reject Evaluate By Default ---")

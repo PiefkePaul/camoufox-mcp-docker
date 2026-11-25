@@ -16,32 +16,62 @@ env:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (Node ${{ matrix.node-version }}, ${{ matrix.browser-mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
     strategy:
+      fail-fast: false
       matrix:
         node-version: [22.x, 24.x]
+        browser-mode: [default, compatibility]
+    env:
+      CAMOUFOX_MCP_BROWSER_COMPATIBILITY: ${{ matrix.browser-mode == 'compatibility' && '1' || '0' }}
     
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     
     - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v6
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
       with:
         node-version: ${{ matrix.node-version }}
         cache: 'npm'
     
-    - name: Install dependencies
-      run: npm ci
+    - name: Check release version synchronization
+      run: node tests/check_release_versions.mjs
+
+    - name: Install dependencies including the compatibility launcher
+      run: npm ci --include=optional
+
+    - name: Install Firefox and virtual-display dependencies
+      run: |
+        node node_modules/playwright-core/cli.js install-deps firefox
+        sudo apt-get install -y --no-install-recommends \
+          xauth libnss3 libdbus-glib-1-2 libpci3 libxss1 libxtst6
     
     - name: Setup Python
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
       with:
         python-version: '3.x'
     
-    - name: Run all local tests
-      run: npm run test:all
+    - name: Run lint, audit, and unit tests
+      run: |
+        npm run lint
+        npm audit
+        npm run test:unit
       timeout-minutes: 10
+
+    - name: Fetch verified browser assets (${{ matrix.browser-mode }})
+      env:
+        # Fork: in Gitea ist github.token ein Gitea-Token; an api.github.com geschickt scheitert der Abruf.
+        GITHUB_TOKEN: ${{ github.server_url == 'https://github.com' && github.token || '' }}
+      run: npm run fetch:camoufox
+      timeout-minutes: 10
+
+    - name: Run browser client tests (${{ matrix.browser-mode }})
+      run: npm run test:local
+      timeout-minutes: 25
 
   build-and-publish-npm:
     name: Build and Publish to NPM
@@ -53,10 +83,10 @@ jobs:
       id-token: write
     
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     
     - name: Setup Node.js
-      uses: actions/setup-node@v6
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
       with:
         node-version: '24.x'
         registry-url: 'https://registry.npmjs.org'
@@ -81,14 +111,16 @@ jobs:
       id-token: write   # OIDC trusted publishing to ClawHub
 
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Setup Node.js
-      uses: actions/setup-node@v6
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
       with:
         node-version: '24.x'
         package-manager-cache: false
 
+    # The CLI version is pinned: this step holds the publish token, so it must
+    # not run whatever release is newest at tag time.
     # Auth: the clawhub CLI does NOT read CLAWHUB_TOKEN from the env — it requires an
     # explicit `clawhub login --token`. Set the CLAWHUB_TOKEN repo secret to an API token
     # for an account that can publish under scope @whit3rabbit.
@@ -106,15 +138,15 @@ jobs:
           echo "CLAWHUB_TOKEN secret is not set; cannot publish to ClawHub." >&2
           exit 1
         fi
-        npx -y clawhub login --token "$CLAWHUB_TOKEN"
-        npx -y clawhub package validate plugins/camoufox --json
+        npx -y clawhub@0.27.0 login --token "$CLAWHUB_TOKEN"
+        npx -y clawhub@0.27.0 package validate plugins/camoufox --json
 
         version="$(node -p 'require("./package.json").version')"
         stage="$(mktemp -d)"
-        mkdir -p "$stage/.codex-plugin" "$stage/.claude-plugin" \
-                 "$stage/skills/camoufox/agents" "$stage/skills/camoufox/references"
+        mkdir -p "$stage/.codex-plugin" "$stage/skills/camoufox/agents" "$stage/skills/camoufox/references"
+        # clawhub 0.27.0 requires exactly one bundle manifest (.codex-plugin or
+        # .claude-plugin; openclaw.plugin.json does not count as one). Stage the codex one.
         cp plugins/camoufox/.codex-plugin/plugin.json "$stage/.codex-plugin/plugin.json"
-        cp plugins/camoufox/.claude-plugin/plugin.json "$stage/.claude-plugin/plugin.json"
         cp plugins/camoufox/.mcp.json "$stage/.mcp.json"
         cp plugins/camoufox/openclaw.plugin.json "$stage/openclaw.plugin.json"
         cp plugins/camoufox/package.json "$stage/package.json"
@@ -123,7 +155,7 @@ jobs:
         cp plugins/camoufox/skills/camoufox/references/json-rpc-debug.md "$stage/skills/camoufox/references/json-rpc-debug.md"
         cp plugins/camoufox/skills/camoufox/references/sequence-actions.md "$stage/skills/camoufox/references/sequence-actions.md"
 
-        npx -y clawhub package publish "$stage" \
+        npx -y clawhub@0.27.0 package publish "$stage" \
           --family bundle-plugin \
           --name @whit3rabbit/camoufox-mcp \
           --display-name "Camoufox MCP" \
@@ -135,81 +167,125 @@ jobs:
           --source-path plugins/camoufox \
           --json
 
+  # Pull requests build and test the image with a read-only token and never log
+  # in to a registry. Publishing is a separate job so pull-request code is never
+  # built in a job whose token can write packages.
+  docker-test:
+    name: Build and Test Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+    # Fork: die Gitea-Runner (ubuntu-latest) haben keinen Docker-Daemon. Docker-Test vor dem
+    # Merge von Hand auf der NAS: python3 tests/test_client.py --mode docker --image-name <tag>
+    if: github.server_url == 'https://github.com' && github.event_name == 'pull_request'
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+    - name: Build Docker image
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        platforms: linux/amd64
+        push: false
+        load: true
+        tags: camoufox-mcp-server:ci
+        # Fork: gha-Cache gibt es nur auf GitHub, nicht in Gitea Actions.
+        cache-from: ${{ github.server_url == 'https://github.com' && 'type=gha' || '' }}
+        cache-to: ${{ github.server_url == 'https://github.com' && 'type=gha,mode=max' || '' }}
+        secrets: |
+          github_token=${{ github.token }}
+
+    - name: Setup Python for Docker runtime tests
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: '3.x'
+
+    - name: Test the built Docker image
+      timeout-minutes: 15
+      run: |
+        PYTHONDONTWRITEBYTECODE=1 python3 tests/test_client.py \
+          --mode docker --image-name camoufox-mcp-server:ci --docker-platform linux/amd64
+
   build-and-publish-docker:
     name: Build and Publish Docker Images
     needs: test
     runs-on: ubuntu-latest
+    # Fork: Images baut nur der GitHub-Spiegel (Docker Hub piefkepaul/camoufox-mcp-docker), nicht Gitea.
+    if: github.server_url == 'https://github.com' && github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
-    
+
     steps:
-    - uses: actions/checkout@v7
-    
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v4
-    
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v4
-    
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
     - name: Log in to Docker Hub
-      if: github.event_name != 'pull_request'
-      uses: docker/login-action@v4
+      uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
       with:
         username: piefkepaul
         password: ${{ secrets.DOCKER_PASSWORD }}
-    
+
     - name: Log in to GitHub Container Registry
-      if: github.event_name != 'pull_request'
-      uses: docker/login-action@v4
+      uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    
+
     - name: Extract metadata
       id: meta
-      uses: docker/metadata-action@v6
+      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
       with:
         images: |
           ${{ env.DOCKER_REPO }}
           ${{ env.GHCR_REPO }}
         tags: |
           type=ref,event=branch
-          type=ref,event=pr
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           type=semver,pattern={{major}}
           type=raw,value=latest,enable={{is_default_branch}}
-    
+
+    # This job only runs for merged code (main, tags, manual dispatch). The job
+    # token is mounted for the browser fetch instruction alone; see the Dockerfile.
     - name: Build and push Docker images
-      uses: docker/build-push-action@v7
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
         context: .
         platforms: linux/amd64
-        push: ${{ github.event_name != 'pull_request' }}
+        push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        secrets: |
+          github_token=${{ github.token }}
 
   release:
     name: Create Release
-    needs: [build-and-publish-npm, build-and-publish-docker]
+    needs: [build-and-publish-npm, build-and-publish-docker, publish-clawhub]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
 
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Resolve release version
       id: version
       run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
     - name: Create Release
-      uses: softprops/action-gh-release@v3
+      uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
       with:
         tag_name: ${{ github.ref_name }}
         name: Release ${{ github.ref_name }}

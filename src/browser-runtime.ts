@@ -1,15 +1,21 @@
 import { Camoufox, type LaunchOptions } from "camoufox-js";
-import { launchPath } from "camoufox-js/dist/pkgman.js";
 import type { Browser, BrowserContext, Page, Response, Route } from "playwright-core";
 import chalk from "chalk";
-import { parseAndValidateBrowserRequestUrl, validateBrowserRequestUrl, validateTargetUrl } from "./policy.js";
-import { DEFAULT_WAIT_STRATEGY, GUARD_SETTLE_MS, LAUNCH_TIMEOUT_MS, MAX_CONCURRENCY, MAX_GUARDED_REQUESTS, MAX_QUEUE, QUEUE_TIMEOUT_MS, isLocaleDebugEnabled } from "./config.js";
+import { isLoopbackNavigationError, normalizeHostname, parseAndValidateBrowserRequestUrl, resolveSystemHost, validateBrowserRequestUrl, validateTargetUrl, type HostResolver } from "./policy.js";
+import { ALLOWED_PRIVATE_HOSTS, BROWSER_CLOSE_TIMEOUT_MS, DEFAULT_WAIT_STRATEGY, GUARD_DNS_CACHE_TTL_MS, GUARD_SETTLE_DEADLINE_MS, GUARD_SETTLE_MS, LAUNCH_TIMEOUT_MS, MAX_CONCURRENCY, MAX_GUARDED_REQUESTS, MAX_QUEUE, PAGE_READ_TIMEOUT_MS, QUEUE_TIMEOUT_MS, isLocaleDebugEnabled } from "./config.js";
+import { RequestCancelledError, currentRequestSignal, throwIfCancelled } from "./request-context.js";
 import { createDiagnosticsCollector } from "./diagnostics.js";
 import { browserContextOptions, buildCamoufoxOptions, validateCommonBrowserInput } from "./browser-options.js";
+import { assertBrowserBinaryAvailable, assertDefaultLaunchAssets, probeBrowserBinary } from "./browser-preflight.js";
+import { BROWSER_COMPATIBILITY, EXPECTED_BROWSER_BUILD } from "./browser-build.js";
+import { launchCompatibilityBrowser } from "./browser-compatibility.js";
+import { trackNavigationResponses } from "./navigation-response.js";
+import { navigateWithDocumentUrlCorrection } from "./navigation.js";
 import type { BrowserInstance, BrowserOperationContext, CamoufoxOptions, CommonBrowserInput, PendingBrowse, RequestGuard, SlotRelease } from "./types.js";
 import { applyStealthProfile, defaultHeadlessMode, describeError, getProxySecrets, getProxyServer, redactUrl, selectOperatingSystem, withTimeout } from "./utils.js";
 
 export { browserContextOptions, buildCamoufoxOptions, validateBrowserOptionsInput } from "./browser-options.js";
+export { MISSING_BROWSER_MESSAGE, assertBrowserBinaryAvailable } from "./browser-preflight.js";
 
 let shuttingDown = false;
 let activeBrowses = 0;
@@ -29,10 +35,11 @@ export function releaseBrowserSlot(): void {
   }
 }
 
-export async function acquireBrowserSlot(): Promise<SlotRelease> {
+export async function acquireBrowserSlot(signal?: AbortSignal): Promise<SlotRelease> {
   if (shuttingDown) {
     throw new Error("Server is shutting down.");
   }
+  throwIfCancelled(signal);
 
   if (activeBrowses < MAX_CONCURRENCY) {
     activeBrowses += 1;
@@ -44,28 +51,43 @@ export async function acquireBrowserSlot(): Promise<SlotRelease> {
   }
 
   return new Promise((resolve, reject) => {
+    const leaveQueue = (): void => {
+      clearTimeout(entry.timer);
+      signal?.removeEventListener("abort", onAbort);
+      const index = pendingBrowses.indexOf(entry);
+      if (index >= 0) {
+        pendingBrowses.splice(index, 1);
+      }
+    };
+    // A cancelled request must not keep its place and later take a slot.
+    const onAbort = (): void => {
+      leaveQueue();
+      reject(new RequestCancelledError());
+    };
     const entry: PendingBrowse = {
-      reject,
+      reject: (error) => {
+        signal?.removeEventListener("abort", onAbort);
+        reject(error);
+      },
       timer: setTimeout(() => {
-        const index = pendingBrowses.indexOf(entry);
-        if (index >= 0) {
-          pendingBrowses.splice(index, 1);
-        }
+        leaveQueue();
         reject(new Error("Timed out waiting for a browse slot."));
       }, QUEUE_TIMEOUT_MS),
       start: () => {
         clearTimeout(entry.timer);
+        signal?.removeEventListener("abort", onAbort);
         activeBrowses += 1;
         resolve(releaseBrowserSlot);
       },
     };
 
+    signal?.addEventListener("abort", onAbort, { once: true });
     pendingBrowses.push(entry);
   });
 }
 
-export async function withBrowserSlot<T>(fn: () => Promise<T>): Promise<T> {
-  const release = await acquireBrowserSlot();
+export async function withBrowserSlot<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const release = await acquireBrowserSlot(signal);
   try {
     return await fn();
   } finally {
@@ -73,23 +95,16 @@ export async function withBrowserSlot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-export const MISSING_BROWSER_MESSAGE =
-  "Camoufox browser binary not installed. Run: npx -y camoufox-js@0.10.2 fetch (one-time ~780MB download into the shared OS cache), then retry.";
-
-// ponytail: preflight only; a launch-time miss after this passes stays generic. `launchPath`
-// throws when the binary is absent (same probe camoufox_status uses). The default arg keeps it
-// injectable so the unit test can drive both branches without a real 780MB download.
-export function assertBrowserBinaryAvailable(probe: () => unknown = launchPath): void {
-  try {
-    probe();
-  } catch {
-    throw new Error(MISSING_BROWSER_MESSAGE);
-  }
-}
-
 export async function launchCamoufoxBrowser(options: CamoufoxOptions): Promise<Browser> {
+  // Both one-shot tools and sessions must reject a missing cache before Camoufox can fetch it.
+  assertBrowserBinaryAvailable();
+  if (!BROWSER_COMPATIBILITY) {
+    assertDefaultLaunchAssets({ geoip: options.geoip, excludeAddons: options.exclude_addons });
+  }
   let timedOut = false;
-  const launchPromise = Camoufox<undefined, Browser>(options as LaunchOptions);
+  const launchPromise = BROWSER_COMPATIBILITY
+    ? launchCompatibilityBrowser(options, probeBrowserBinary(), Number(EXPECTED_BROWSER_BUILD.version.split(".")[0]))
+    : Camoufox<undefined, Browser>(options as LaunchOptions);
   launchPromise.then(
     (browser) => {
       if (timedOut) {
@@ -107,19 +122,55 @@ export async function launchCamoufoxBrowser(options: CamoufoxOptions): Promise<B
   }
 }
 
-export async function installRequestGuard(context: BrowserContext): Promise<RequestGuard> {
-  let inspectedRequests = 0;
-  let blockedRequestError: Error | undefined;
+type BlockKind = "prevented" | "sent";
 
-  function blockRequest(rawUrl: string, reason: string): void {
-    if (!blockedRequestError) {
-      blockedRequestError = new Error(`Blocked unsafe browser request to ${redactUrl(rawUrl)}. ${reason}`);
+export async function installRequestGuard(context: BrowserContext, resolveHost: HostResolver = resolveSystemHost): Promise<RequestGuard> {
+  let inspectedRequests = 0;
+  // "prevented": the request was aborted before anything left the browser.
+  // "sent": the browser already issued it (a redirect hop), or the request
+  // budget ran out. Kept apart so a later sent block is never masked.
+  let preventedBlock: Error | undefined;
+  let sentBlock: Error | undefined;
+  // Bumped by reset() so validations started for an earlier document cannot
+  // record a block against the next one.
+  let generation = 0;
+  const pendingValidations = new Set<Promise<void>>();
+  let dnsCache = new Map<string, { expiresAt: number; records: ReturnType<HostResolver> }>();
+
+  // Every routed request waits on DNS before it continues, and one page can
+  // issue hundreds to the same host. Coalescing and a short positive cache do
+  // not weaken the check: the browser resolves the name itself afterwards
+  // either way, so this lookup was never the connect-time answer.
+  const cachedResolver: HostResolver = (hostname) => {
+    const now = Date.now();
+    const cached = dnsCache.get(hostname);
+    if (cached && cached.expiresAt > now) {
+      return cached.records;
+    }
+
+    const cache = dnsCache;
+    const entry = { expiresAt: now + GUARD_DNS_CACHE_TTL_MS, records: resolveHost(hostname) };
+    cache.set(hostname, entry);
+    entry.records.catch(() => {
+      if (cache.get(hostname) === entry) {
+        cache.delete(hostname);
+      }
+    });
+    return entry.records;
+  };
+
+  function blockRequest(kind: BlockKind, rawUrl: string, reason: string): void {
+    const error = new Error(`Blocked unsafe browser request to ${redactUrl(rawUrl)}. ${reason}`);
+    if (kind === "sent") {
+      sentBlock ??= error;
+    } else {
+      preventedBlock ??= error;
     }
   }
 
   function hasRequestBudget(rawUrl: string): boolean {
     if (inspectedRequests >= MAX_GUARDED_REQUESTS) {
-      blockRequest(rawUrl, "Too many browser requests.");
+      blockRequest("sent", rawUrl, "Too many browser requests.");
       return false;
     }
 
@@ -129,11 +180,37 @@ export async function installRequestGuard(context: BrowserContext): Promise<Requ
 
   context.on("request", (request) => {
     const requestUrl = request.url();
+    const isRedirectHop = request.redirectedFrom() !== null;
+    let needsDnsCheck: boolean;
     try {
-      parseAndValidateBrowserRequestUrl(requestUrl);
+      needsDnsCheck = parseAndValidateBrowserRequestUrl(requestUrl).needsDnsCheck;
     } catch (requestError) {
-      blockRequest(requestUrl, describeError(requestError));
+      blockRequest(isRedirectHop ? "sent" : "prevented", requestUrl, describeError(requestError));
+      return;
     }
+
+    // Route handlers run only for the first request of a redirect chain, so a
+    // hop to a name that resolves to private space is checked here. The hop is
+    // already on the wire and cannot be aborted; recording it keeps page state
+    // from being returned afterwards. Hops share the route budget, which keeps
+    // a redirect loop from issuing unbounded lookups.
+    if (!isRedirectHop || !needsDnsCheck || !hasRequestBudget(requestUrl)) {
+      return;
+    }
+
+    const startedIn = generation;
+    // Both outcomes are handled: an unhandled rejection would shut the server down.
+    const validation: Promise<void> = validateBrowserRequestUrl(requestUrl, cachedResolver).then(
+      () => undefined,
+      (requestError: unknown) => {
+        if (startedIn === generation) {
+          blockRequest("sent", requestUrl, describeError(requestError));
+        }
+      },
+    ).finally(() => {
+      pendingValidations.delete(validation);
+    });
+    pendingValidations.add(validation);
   });
 
   await context.route("**/*", async (route: Route) => {
@@ -145,9 +222,9 @@ export async function installRequestGuard(context: BrowserContext): Promise<Requ
     }
 
     try {
-      await validateBrowserRequestUrl(requestUrl);
+      await validateBrowserRequestUrl(requestUrl, cachedResolver);
     } catch (requestError) {
-      blockRequest(requestUrl, describeError(requestError));
+      blockRequest("prevented", requestUrl, describeError(requestError));
       await route.abort("blockedbyclient").catch(() => undefined);
       return;
     }
@@ -166,9 +243,9 @@ export async function installRequestGuard(context: BrowserContext): Promise<Requ
     }
 
     try {
-      await validateBrowserRequestUrl(requestUrl);
+      await validateBrowserRequestUrl(requestUrl, cachedResolver);
     } catch (requestError) {
-      blockRequest(requestUrl, describeError(requestError));
+      blockRequest("prevented", requestUrl, describeError(requestError));
       await webSocket.close({ code: 1008, reason: "Blocked by server policy" }).catch(() => undefined);
       return;
     }
@@ -176,27 +253,59 @@ export async function installRequestGuard(context: BrowserContext): Promise<Requ
     webSocket.connectToServer();
   });
 
-  return {
-    assertAllowed(): void {
-      if (blockedRequestError) {
-        throw blockedRequestError;
-      }
-    },
-    watchPage(page: Page): void {
-      page.on("websocket", (webSocket) => {
-        const requestUrl = webSocket.url();
-        if (!hasRequestBudget(requestUrl)) {
-          return;
-        }
+  function assertAllowed(): void {
+    const block = sentBlock ?? preventedBlock;
+    if (block) {
+      throw block;
+    }
+  }
 
-        try {
-          parseAndValidateBrowserRequestUrl(requestUrl);
-        } catch (requestError) {
-          blockRequest(requestUrl, describeError(requestError));
-        }
-      });
+  async function settle(): Promise<void> {
+    const deadline = Date.now() + GUARD_SETTLE_DEADLINE_MS;
+    // A validation can finish while another hop arrives, so wait until the set
+    // is empty rather than for one snapshot of it.
+    while (pendingValidations.size > 0) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        sentBlock ??= new Error("Blocked unsafe browser request. Redirect validation did not finish in time.");
+        return;
+      }
+      await withTimeout(Promise.all(pendingValidations), remaining, "Redirect validation").catch(() => undefined);
+    }
+  }
+
+  return {
+    assertAllowed,
+    settle,
+    async assertSettled(): Promise<void> {
+      await settle();
+      assertAllowed();
+    },
+    takeBlock(): Error | undefined {
+      const block = sentBlock ?? preventedBlock;
+      preventedBlock = undefined;
+      return block;
+    },
+    reset(): void {
+      inspectedRequests = 0;
+      preventedBlock = undefined;
+      sentBlock = undefined;
+      generation += 1;
+      pendingValidations.clear();
+      dnsCache = new Map();
     },
   };
+}
+
+// A failed navigation whose error names loopback was refused by the browser's
+// own local-network handling. Report it as a policy block like any other.
+export function describeNavigationFailure(navigationError: unknown, targetUrl: URL, safeUrl: string): unknown {
+  if (!ALLOWED_PRIVATE_HOSTS.includes(normalizeHostname(targetUrl.hostname))
+    && isLoopbackNavigationError(describeError(navigationError))) {
+    return new Error(`Blocked unsafe browser request to ${safeUrl}.`, { cause: navigationError });
+  }
+
+  return navigationError;
 }
 
 export async function runBrowserOperation<T>(
@@ -204,13 +313,13 @@ export async function runBrowserOperation<T>(
   input: CommonBrowserInput,
   callback: (context: BrowserOperationContext) => Promise<T>,
 ): Promise<T> {
+  // Read once, synchronously: see request-context.ts.
+  const signal = currentRequestSignal();
   const effectiveInput = applyStealthProfile(input);
   const safeUrl = redactUrl(effectiveInput.url);
   const targetUrl = await validateCommonBrowserInput(effectiveInput);
 
   return withBrowserSlot(async () => {
-    assertBrowserBinaryAvailable();
-
     const selectedOS = selectOperatingSystem(effectiveInput.os);
     const waitStrategy = effectiveInput.waitStrategy ?? DEFAULT_WAIT_STRATEGY;
     const headlessMode = defaultHeadlessMode(effectiveInput.headless);
@@ -230,53 +339,48 @@ export async function runBrowserOperation<T>(
 
     const browser = await launchCamoufoxBrowser(buildCamoufoxOptions(effectiveInput, selectedOS, headlessMode));
     activeBrowsers.add(browser);
+    // Closing the browser rejects every pending Playwright call, which unwinds
+    // the operation and frees the slot even when the page itself is hung.
+    const onAbort = (): void => {
+      console.error(chalk.yellow(`[Camoufox] Client cancelled ${label}; closing browser.`));
+      void closeBrowser(browser);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
+      throwIfCancelled(signal);
       const context = await browser.newContext(browserContextOptions(effectiveInput));
       const requestGuard = await installRequestGuard(context);
       const page = await context.newPage();
-      requestGuard.watchPage(page);
 
       const rawUrls = [effectiveInput.url, getProxyServer(effectiveInput.proxy)].filter((rawUrl): rawUrl is string => Boolean(rawUrl));
       const secrets = getProxySecrets(effectiveInput.proxy);
       const diagnostics = createDiagnosticsCollector(page, effectiveInput, rawUrls, secrets);
       let lastNavigationResponse: Response | null = null;
-      page.on("response", (response) => {
-        const request = response.request();
-        if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
-          lastNavigationResponse = response;
-        }
+      trackNavigationResponses(page, (committedResponse) => {
+        lastNavigationResponse = committedResponse;
       });
 
       let response: Response | null;
       try {
-        response = await page.goto(targetUrl.toString(), {
+        response = await navigateWithDocumentUrlCorrection(page, targetUrl, {
           waitUntil: waitStrategy,
           timeout: effectiveInput.timeout,
-        });
-        lastNavigationResponse = response;
+        }, () => settleAndAssertSafe(page, requestGuard));
       } catch (navigationError) {
-        const navigationErrorMessage = describeError(navigationError).toLowerCase();
-        if (/\b(?:127\.0\.0\.1|localhost|ip6-localhost|ip6-loopback|::1)\b/.test(navigationErrorMessage)) {
-          throw new Error(`Blocked unsafe browser request to ${safeUrl}.`, { cause: navigationError });
-        }
-
-        requestGuard.assertAllowed();
-        throw navigationError;
+        await requestGuard.assertSettled();
+        throw describeNavigationFailure(navigationError, targetUrl, safeUrl);
       }
 
-      await page.waitForTimeout(GUARD_SETTLE_MS);
-      requestGuard.assertAllowed();
-      await validateTargetUrl(page.url());
-      requestGuard.assertAllowed();
       if (isLocaleDebugEnabled()) {
         try {
-          const localeSnapshot = await page.evaluate(() => ({
+          // Diagnostics only: bounded so a busy page cannot stall the browse.
+          const localeSnapshot = await withTimeout(page.evaluate(() => ({
             navigatorLanguage: navigator.language,
             navigatorLanguages: navigator.languages,
             intlLocale: Intl.DateTimeFormat().resolvedOptions().locale,
             htmlLang: document.documentElement?.lang ?? null,
-          }));
+          })), 2_000, "Locale debug snapshot");
           console.error(
             chalk.magenta(
               `[Camoufox] Locale debug effective: ${JSON.stringify({
@@ -297,13 +401,22 @@ export async function runBrowserOperation<T>(
         diagnostics,
         selectedOS,
         waitStrategy,
+        captchaPolicy: effectiveInput.captchaPolicy,
         getLastNavigationResponse: () => lastNavigationResponse,
       });
+    } catch (operationError) {
+      // The browser was closed underneath the operation; the resulting
+      // "target closed" error is noise next to the real reason.
+      if (signal?.aborted) {
+        throw new RequestCancelledError({ cause: operationError });
+      }
+      throw operationError;
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       console.error(chalk.blue("[Camoufox] Closing browser."));
       await closeBrowser(browser);
     }
-  });
+  }, signal);
 }
 
 export async function assertPageLocationSafe(page: Page): Promise<void> {
@@ -316,25 +429,34 @@ export async function assertPageLocationSafe(page: Page): Promise<void> {
 
 export async function settleAndAssertSafe(page: Page, requestGuard: RequestGuard): Promise<void> {
   await page.waitForTimeout(GUARD_SETTLE_MS);
-  requestGuard.assertAllowed();
+  await requestGuard.assertSettled();
   await assertPageLocationSafe(page);
-  requestGuard.assertAllowed();
+  await requestGuard.assertSettled();
 }
 
-export async function runGuardedPageRead<T>(page: Page, requestGuard: RequestGuard, read: () => Promise<T>): Promise<T> {
+// Every read that returns page-derived data (text, snapshots, screenshots,
+// titles, challenge detection) goes through here: the guard and the committed
+// location are checked before and after, and the read itself is bounded so a
+// page that never yields cannot hold the browse slot.
+export async function runGuardedPageRead<T>(
+  page: Page,
+  requestGuard: RequestGuard,
+  read: () => Promise<T>,
+  label = "Page read",
+): Promise<T> {
   try {
-    requestGuard.assertAllowed();
+    await requestGuard.assertSettled();
     await assertPageLocationSafe(page);
     requestGuard.assertAllowed();
-    const result = await read();
+    const result = await withTimeout(read(), PAGE_READ_TIMEOUT_MS, label);
     await page.waitForTimeout(GUARD_SETTLE_MS).catch(() => undefined);
-    requestGuard.assertAllowed();
+    await requestGuard.assertSettled();
     await assertPageLocationSafe(page);
     requestGuard.assertAllowed();
     return result;
   } catch (readError) {
     await page.waitForTimeout(GUARD_SETTLE_MS).catch(() => undefined);
-    requestGuard.assertAllowed();
+    await requestGuard.assertSettled();
     await assertPageLocationSafe(page);
     requestGuard.assertAllowed();
     throw readError;
@@ -344,7 +466,9 @@ export async function runGuardedPageRead<T>(page: Page, requestGuard: RequestGua
 export async function closeBrowser(browser: BrowserInstance): Promise<void> {
   activeBrowsers.delete(browser);
   try {
-    await browser.close();
+    // A wedged browser must not hold shutdown, cancellation, or a session
+    // close open indefinitely.
+    await withTimeout(browser.close(), BROWSER_CLOSE_TIMEOUT_MS, "Browser close");
   } catch (closeError) {
     console.error(chalk.yellow(`[Camoufox] Browser close failed: ${describeError(closeError)}`));
   }

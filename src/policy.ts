@@ -1,5 +1,13 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { ALLOWED_PRIVATE_HOSTS, DNS_LOOKUP_TIMEOUT_MS, readAllowedPrivateHosts } from "./config.js";
+import { withTimeout } from "./utils.js";
+
+export type HostResolver = (hostname: string) => Promise<Array<{ address: string }>>;
+
+const systemResolver: HostResolver = (hostname) => lookup(hostname, { all: true, verbatim: true });
+
+const allowedPrivateHosts = new Set(ALLOWED_PRIVATE_HOSTS);
 
 export interface ParsedTargetUrl {
   parsed: URL;
@@ -17,7 +25,7 @@ export function normalizeHostname(hostname: string): string {
     .toLowerCase()
     .replace(/^\[/, "")
     .replace(/\]$/, "")
-    .replace(/\.$/, "");
+    .replace(/\.+$/, "");
 }
 
 export function isBlockedHostname(hostname: string): boolean {
@@ -70,7 +78,8 @@ export function isBlockedIpv4(address: string): boolean {
     || (first === 100 && second >= 64 && second <= 127)
     || (first === 169 && second === 254)
     || (first === 172 && second >= 16 && second <= 31)
-    || (first === 192 && second === 0)
+    || (first === 192 && second === 0 && third === 0)
+    || (first === 192 && second === 0 && third === 2)
     || (first === 192 && second === 88 && third === 99)
     || (first === 192 && second === 168)
     || (first === 198 && second === 51 && third === 100)
@@ -211,19 +220,29 @@ function buildIpv6Cidr(base: string, prefix: number): Ipv6Cidr {
   return { base: value, prefix };
 }
 
+// NAT64 well-known prefix (RFC 6052): the low 32 bits are an IPv4 address the
+// gateway forwards to. On DNS64 networks every IPv4-only site resolves here, so
+// the embedded address decides, not the prefix.
+const NAT64_WELL_KNOWN_CIDR = buildIpv6Cidr("64:ff9b::", 96);
+
 const BLOCKED_IPV6_CIDRS: Ipv6Cidr[] = [
-  buildIpv6Cidr("::", 128),
-  buildIpv6Cidr("::1", 128),
-  buildIpv6Cidr("64:ff9b::", 96),
-  buildIpv6Cidr("64:ff9b:1::", 48),
+  // Reserved by IETF. Covers unspecified, loopback, IPv4-compatible (::a.b.c.d),
+  // IPv4-translated (::ffff:0:a.b.c.d) and local-use NAT64 (64:ff9b:1::/48).
+  // IPv4-mapped and well-known NAT64 addresses are decoded before this list.
+  buildIpv6Cidr("::", 8),
   buildIpv6Cidr("100::", 64),
   buildIpv6Cidr("2001::", 23),
   buildIpv6Cidr("2001:db8::", 32),
   buildIpv6Cidr("2002::", 16),
   buildIpv6Cidr("fc00::", 7),
   buildIpv6Cidr("fe80::", 10),
+  // Deprecated site-local range; still routed inside some private networks.
+  buildIpv6Cidr("fec0::", 10),
   buildIpv6Cidr("ff00::", 8),
 ];
+
+// AWS reserves this ULA prefix for local services, including instance metadata.
+const AWS_LOCAL_SERVICES_IPV6_CIDR = buildIpv6Cidr("fd00:ec2::", 32);
 
 function isIpv6InCidr(address: bigint, cidr: Ipv6Cidr): boolean {
   const shift = 128n - BigInt(cidr.prefix);
@@ -242,6 +261,11 @@ export function isBlockedIpv6(address: string): boolean {
     return true;
   }
 
+  if (isIpv6InCidr(value, NAT64_WELL_KNOWN_CIDR)) {
+    const embedded = Number(value & 0xffffffffn);
+    return isBlockedIpv4([embedded >>> 24, (embedded >>> 16) & 255, (embedded >>> 8) & 255, embedded & 255].join("."));
+  }
+
   return BLOCKED_IPV6_CIDRS.some((cidr) => isIpv6InCidr(value, cidr));
 }
 
@@ -257,6 +281,47 @@ export function isBlockedIp(address: string): boolean {
   }
 
   return true;
+}
+
+function isPrivateDevelopmentAddress(address: string): boolean {
+  const normalized = normalizeHostname(address);
+  const mappedIpv4 = ipv4FromMappedIpv6(normalized);
+  if (mappedIpv4) {
+    return isPrivateDevelopmentAddress(mappedIpv4);
+  }
+
+  if (isIP(normalized) === 4) {
+    const [first, second] = normalized.split(".").map(Number);
+    return first === 127
+      || first === 10
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168);
+  }
+
+  if (isIP(normalized) === 6) {
+    const value = parseIpv6ToBigInt(normalized);
+    if (value === undefined || isIpv6InCidr(value, AWS_LOCAL_SERVICES_IPV6_CIDR)) {
+      return false;
+    }
+    return value === 1n || (value >> 121n) === 0x7en;
+  }
+
+  return false;
+}
+
+function privateHostHint(hostname: string): string {
+  if (allowedPrivateHosts.has(hostname)) {
+    return "";
+  }
+  try {
+    const parsedHosts = readAllowedPrivateHosts(hostname);
+    if (parsedHosts.length !== 1 || parsedHosts[0] !== hostname) {
+      return "";
+    }
+  } catch {
+    return "";
+  }
+  return ` For a trusted host resolving to loopback or private-network addresses, set CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS=${hostname} in the MCP server environment (append to any existing list), then restart the MCP server.`;
 }
 
 export function parseAndValidateTargetUrl(rawUrl: string): ParsedTargetUrl {
@@ -284,8 +349,8 @@ export function parseAndValidateTargetUrl(rawUrl: string): ParsedTargetUrl {
     };
   }
 
-  if (isBlockedHostname(hostname)) {
-    throw new Error("Local hostnames are not allowed.");
+  if (isBlockedHostname(hostname) && !allowedPrivateHosts.has(hostname)) {
+    throw new Error(`Local hostnames are not allowed.${privateHostHint(hostname)}`);
   }
 
   if (isIP(hostname)) {
@@ -298,7 +363,10 @@ export function parseAndValidateTargetUrl(rawUrl: string): ParsedTargetUrl {
     }
 
     if (isBlockedIp(hostname)) {
-      throw new Error("Private, local, or reserved IP addresses are not allowed.");
+      const hint = isPrivateDevelopmentAddress(hostname)
+        ? " For a trusted private endpoint, use a resolvable DNS hostname and add that hostname to CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS in the MCP server environment, then restart the MCP server. IP literals cannot be allowlisted."
+        : "";
+      throw new Error(`Private, local, or reserved IP addresses are not allowed.${hint}`);
     }
     return {
       parsed,
@@ -314,7 +382,7 @@ export function parseAndValidateTargetUrl(rawUrl: string): ParsedTargetUrl {
   };
 }
 
-export async function validateTargetUrl(rawUrl: string): Promise<URL> {
+export async function validateTargetUrl(rawUrl: string, resolveHost: HostResolver = systemResolver): Promise<URL> {
   const { parsed, hostname, needsDnsCheck } = parseAndValidateTargetUrl(rawUrl);
 
   if (!needsDnsCheck) {
@@ -323,7 +391,9 @@ export async function validateTargetUrl(rawUrl: string): Promise<URL> {
 
   let records: Array<{ address: string }>;
   try {
-    records = await lookup(hostname, { all: true, verbatim: true });
+    // getaddrinfo has no deadline of its own. A resolver that never answers
+    // must fail closed instead of holding the request guard open.
+    records = await withTimeout(resolveHost(hostname), DNS_LOOKUP_TIMEOUT_MS, "DNS lookup");
   } catch {
     throw new Error("Could not resolve URL host.");
   }
@@ -332,8 +402,15 @@ export async function validateTargetUrl(rawUrl: string): Promise<URL> {
     throw new Error("URL host did not resolve to an address.");
   }
 
-  if (records.some((record) => isBlockedIp(record.address))) {
-    throw new Error("URL host resolves to a private, local, or reserved address.");
+  // Opt-in applies only to this exact hostname and ordinary development-network
+  // addresses. Metadata, link-local, multicast, and reserved ranges stay denied.
+  const blockedRecords = records.filter((record) => isBlockedIp(record.address));
+  if (blockedRecords.some((record) => !(allowedPrivateHosts.has(hostname) && isPrivateDevelopmentAddress(record.address)))) {
+    // Suggest opt-in only when it could allow the complete DNS result set.
+    const hint = blockedRecords.every((record) => isPrivateDevelopmentAddress(record.address))
+      ? privateHostHint(hostname)
+      : "";
+    throw new Error(`URL host resolves to a private, local, or reserved address.${hint}`);
   }
 
   return parsed;
@@ -360,6 +437,19 @@ export function parseAndValidateBrowserRequestUrl(rawUrl: string): ParsedTargetU
   return parseAndValidateTargetUrl(browserRequestPolicyUrl(rawUrl));
 }
 
-export async function validateBrowserRequestUrl(rawUrl: string): Promise<URL> {
-  return validateTargetUrl(browserRequestPolicyUrl(rawUrl));
+export async function validateBrowserRequestUrl(rawUrl: string, resolveHost?: HostResolver): Promise<URL> {
+  return validateTargetUrl(browserRequestPolicyUrl(rawUrl), resolveHost);
+}
+
+export function resolveSystemHost(hostname: string): Promise<Array<{ address: string }>> {
+  return systemResolver(hostname);
+}
+
+// Playwright reports a refused or rejected loopback connection with the address
+// in the message. Used to label a failed navigation as a policy block. Bracketed
+// and bare IPv6 loopback need explicit boundaries: \b cannot anchor on ":".
+const LOOPBACK_ERROR_PATTERN = /(?:\b(?:127\.0\.0\.1|localhost|ip6-localhost|ip6-loopback)\b|(?<![0-9a-f:])::1(?![0-9a-f:]))/;
+
+export function isLoopbackNavigationError(message: string): boolean {
+  return LOOPBACK_ERROR_PATTERN.test(message.toLowerCase());
 }

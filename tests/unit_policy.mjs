@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   browserRequestPolicyUrl,
   isBlockedIp,
@@ -12,6 +13,7 @@ const blockedAddresses = [
   "169.254.169.254",
   "172.16.0.1",
   "192.0.0.1",
+  "192.0.2.5",
   "192.168.0.1",
   "192.88.99.1",
   "224.0.0.1",
@@ -42,6 +44,10 @@ const allowedAddresses = [
   "93.184.216.34",
   "2606:4700:4700::1111",
   "2001:4860:4860::8888",
+  // 192.0.0.0/16 was previously over-blocked; only /24s are reserved now.
+  // 192.0.32.0/20 is ICANN-delegated public space (was wrongly blocked before).
+  "192.0.31.255",
+  "192.0.32.1",
 ];
 
 for (const address of allowedAddresses) {
@@ -54,6 +60,224 @@ for (const address of allowedAddresses) {
 
 assert.equal(browserRequestPolicyUrl("ws://example.com/socket"), "http://example.com/socket");
 assert.equal(browserRequestPolicyUrl("wss://example.com/socket"), "https://example.com/socket");
+
+const policyUrl = new URL("../dist/policy.js", import.meta.url).href;
+const configUrl = new URL("../dist/config.js", import.meta.url).href;
+const proxyOptionsUrl = new URL("../dist/browser-options.js", import.meta.url).href;
+
+function runPrivateHostScenario(allowedHosts, assertions) {
+  // A fresh process and stub resolver exercise DNS policy without depending on
+  // the runner's DNS or /etc/hosts configuration.
+  execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import dns from "node:dns/promises";
+    import { syncBuiltinESMExports } from "node:module";
+    let addresses = ["127.0.0.1"];
+    let resolutionError;
+    const lookedUpHosts = [];
+    dns.lookup = async (hostname, options) => {
+      assert.deepEqual(options, { all: true, verbatim: true });
+      lookedUpHosts.push(hostname);
+      if (resolutionError) throw resolutionError;
+      return addresses.map((address) => ({ address }));
+    };
+    syncBuiltinESMExports();
+    const { parseAndValidateTargetUrl, validateTargetUrl, validateBrowserRequestUrl } = await import(${JSON.stringify(policyUrl)});
+    const { buildNetworkSecurityStatus, readAllowedPrivateHosts } = await import(${JSON.stringify(configUrl)});
+    const { validateProxyConfig } = await import(${JSON.stringify(proxyOptionsUrl)});
+    ${assertions}
+  `], {
+    env: {
+      ...process.env,
+      NODE_ENV: "production",
+      CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS: allowedHosts,
+      CAMOUFOX_MCP_TEST_ALLOW_LOCALHOST: "0",
+    },
+  });
+}
+
+runPrivateHostScenario("", `
+  await assert.rejects(validateTargetUrl("http://laravel.test/api-documentation"), /private, local, or reserved/);
+  await assert.rejects(validateBrowserRequestUrl("ws://laravel.test/socket"), /private, local, or reserved/);
+  await assert.rejects(validateProxyConfig("http://laravel.test:8080"), /Proxy server is not allowed/);
+  assert.deepEqual(buildNetworkSecurityStatus().allowedPrivateHosts, []);
+
+  for (const [hostname, expectedHost, address] of [
+    ["api.internal", "api.internal", "10.20.30.40"],
+    ["APP.CORP.", "app.corp", "192.168.10.20"],
+    ["customname", "customname", "127.0.0.1"],
+    ["dashboard.example", "dashboard.example", "fd00::1"],
+  ]) {
+    addresses = ["93.184.216.34", address];
+    const actionableError = (error) => {
+      assert.match(error.message, /private, local, or reserved/);
+      assert.ok(error.message.includes("CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS=" + expectedHost), error.message);
+      assert.match(error.message, /server environment/);
+      assert.match(error.message, /restart/);
+      return true;
+    };
+    await assert.rejects(validateTargetUrl("http://" + hostname + "/"), actionableError);
+    await assert.rejects(validateBrowserRequestUrl("ws://" + hostname + "/socket"), actionableError);
+    await assert.rejects(validateProxyConfig("http://" + hostname + ":8080"), actionableError);
+  }
+
+  for (const address of ["169.254.169.254", "192.0.2.5", "100.64.0.1", "0.0.0.0", "fd00:ec2::254", "fe80::1", "ff00::1"]) {
+    for (const records of [[address], ["127.0.0.1", address]]) {
+      addresses = records;
+      for (const hostname of ["laravel.test", "api.internal"]) {
+        await assert.rejects(validateTargetUrl("http://" + hostname + "/"), (error) => {
+          assert.match(error.message, /private, local, or reserved/);
+          assert.doesNotMatch(error.message, /CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS/, "the allowlist cannot enable this DNS record set");
+          return true;
+        });
+      }
+    }
+  }
+
+  addresses = ["127.0.0.1"];
+  for (const hostname of ["invalid_name.internal", "app$(id).internal", "app,db.internal"]) {
+    await assert.rejects(validateTargetUrl("http://" + hostname + "/"), (error) => {
+      assert.match(error.message, /private, local, or reserved/);
+      assert.doesNotMatch(error.message, /CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS/, "invalid allowlist hostnames must not receive an impossible remedy");
+      return true;
+    });
+  }
+
+  for (const address of ["127.0.0.1", "10.0.0.1", "192.168.0.1", "::1", "fd00::1", "::ffff:127.0.0.1"]) {
+    assert.throws(() => parseAndValidateTargetUrl(address.includes(":") ? "http://[" + address + "]/" : "http://" + address + "/"), (error) => {
+      assert.match(error.message, /not allowed/);
+      assert.match(error.message, /resolvable DNS hostname/);
+      assert.match(error.message, /CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS/);
+      assert.match(error.message, /restart/);
+      assert.ok(!error.message.includes("CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS=" + address), "IP literals cannot be allowlisted");
+      return true;
+    });
+  }
+  for (const address of ["169.254.169.254", "192.0.2.5", "fd00:ec2::254", "fe80::1", "ff00::1"]) {
+    assert.throws(() => parseAndValidateTargetUrl(address.includes(":") ? "http://[" + address + "]/" : "http://" + address + "/"), (error) => {
+      assert.match(error.message, /not allowed/);
+      assert.doesNotMatch(error.message, /CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS/, "these IPs cannot be enabled through hostname aliases");
+      return true;
+    });
+  }
+`);
+
+runPrivateHostScenario("api.internal,app.corp,customname,dashboard.example", `
+  for (const [hostname, address] of [["api.internal", "10.20.30.40"], ["app.corp", "192.168.10.20"], ["customname", "127.0.0.1"], ["dashboard.example", "fd00::1"]]) {
+    addresses = [address];
+    await assert.doesNotReject(validateTargetUrl("http://" + hostname + "/"), "the advertised exact-host remedy must work after restart");
+    await assert.doesNotReject(validateBrowserRequestUrl("ws://" + hostname + "/socket"));
+  }
+`);
+
+runPrivateHostScenario(" Laravel.TEST.,localhost,dev.local,laravel.test ", `
+  await assert.doesNotReject(validateTargetUrl("http://laravel.test/api-documentation"));
+  await assert.doesNotReject(validateTargetUrl("http://LARAVEL.TEST.:8080/styles.css"));
+  await assert.doesNotReject(validateTargetUrl("http://localhost:8080/"));
+  await assert.doesNotReject(validateTargetUrl("http://dev.local/"));
+  assert.equal(parseAndValidateTargetUrl("http://localhost/").needsDnsCheck, true, "explicit local hosts still require DNS validation");
+  await assert.doesNotReject(validateBrowserRequestUrl("ws://laravel.test/socket"));
+  await assert.doesNotReject(validateBrowserRequestUrl("wss://localhost/socket"));
+  await assert.doesNotReject(validateProxyConfig({ server: "http://laravel.test:8080" }));
+  assert.ok(lookedUpHosts.includes("laravel.test"));
+  assert.deepEqual(buildNetworkSecurityStatus().allowedPrivateHosts, ["laravel.test", "localhost", "dev.local"]);
+
+  for (const address of ["127.0.0.2", "10.0.0.1", "172.16.0.1", "192.168.0.1", "::1", "fd00::1", "fd00:ec3::1", "::ffff:127.0.0.1", "::ffff:c0a8:1", "93.184.216.34"]) {
+    addresses = [address];
+    await assert.doesNotReject(validateTargetUrl("http://laravel.test/"), address);
+  }
+  addresses = ["93.184.216.34", "127.0.0.1", "fd00::1"];
+  await assert.doesNotReject(validateTargetUrl("http://laravel.test/"));
+
+  for (const address of ["0.0.0.0", "169.254.169.254", "100.64.0.1", "100.127.255.255", "192.0.0.1", "192.0.2.5", "192.88.99.1", "198.18.0.1", "198.51.100.1", "203.0.113.1", "224.0.0.1", "::", "64:ff9b::1", "64:ff9b:1::1", "100::1", "2001::1", "2001:db8::1", "2002::1", "fe80::1", "ff00::1", "::ffff:a9fe:a9fe", "fd00:ec2::254", "fd00:0ec2:0000:0000:0000:0000:0000:0254", "fd00:ec2:abcd:1::1"]) {
+    addresses = ["127.0.0.1", address];
+    await assert.rejects(validateTargetUrl("http://laravel.test/"), (error) => {
+      assert.match(error.message, /private, local, or reserved/);
+      assert.doesNotMatch(error.message, /CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS/, "already-listed hosts cannot opt out of unsafe address restrictions");
+      return true;
+    }, address + " remains denied for allowlisted hosts");
+    await assert.rejects(validateBrowserRequestUrl("ws://laravel.test/socket"), /private, local, or reserved/);
+  }
+
+  addresses = ["127.0.0.1"];
+  for (const hostname of ["other.test", "sub.laravel.test", "laravel.test.evil.example", "evillaravel.test"]) {
+    await assert.rejects(validateTargetUrl("http://" + hostname + "/"), /private, local, or reserved/, hostname + " does not inherit permission");
+  }
+  assert.throws(() => parseAndValidateTargetUrl("http://sub.localhost/"), /not allowed/);
+  assert.throws(() => parseAndValidateTargetUrl("http://other.local/"), /not allowed/);
+  assert.throws(() => parseAndValidateTargetUrl("http://127.0.0.1/"), /not allowed/);
+  assert.throws(() => parseAndValidateTargetUrl("http://169.254.169.254/"), /not allowed/);
+  assert.throws(() => parseAndValidateTargetUrl("file://laravel.test/etc/passwd"), /Only http and https/);
+
+  addresses = [];
+  await assert.rejects(validateTargetUrl("http://laravel.test/"), /did not resolve/);
+  resolutionError = new Error("ENOTFOUND");
+  await assert.rejects(validateTargetUrl("http://laravel.test/"), /Could not resolve/);
+  resolutionError = undefined;
+  addresses = ["127.0.0.1"];
+  process.env.CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS = "other.test";
+  await assert.rejects(validateTargetUrl("http://other.test/"), /private, local, or reserved/, "tool-time environment changes cannot expand the startup policy");
+
+  for (const invalid of ["*.test", "http://laravel.test", "laravel.test:8080", "laravel.test/path", "127.0.0.1", "127.1", "0x7f000001", "256.0.0.1", "[::1]", "laravel..test", "-laravel.test", "laravel_test", "laravel.test,*.test"]) {
+    assert.throws(() => readAllowedPrivateHosts(invalid), /CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS/, invalid);
+  }
+  assert.deepEqual(readAllowedPrivateHosts(" LOCALHOST, Laravel.Test. ,localhost"), ["localhost", "laravel.test"]);
+`);
+
+execFileSync(process.execPath, ["--input-type=module", "-e", `
+  import assert from "node:assert/strict";
+  await assert.rejects(import(${JSON.stringify(configUrl)}), /CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS/);
+`], { env: { ...process.env, CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS: "*.test" } });
+
+// Read unsafe-option policy in a fresh process so opt-in reaches the denylist,
+// rather than passing because the default blanket restriction rejects prefs.
+const browserOptionsUrl = new URL("../dist/browser-options.js", import.meta.url).href;
+execFileSync(process.execPath, ["--input-type=module", "-e", `
+  import assert from "node:assert/strict";
+  import { validateBrowserOptionsInput } from ${JSON.stringify(browserOptionsUrl)};
+  for (const key of ["dom.serviceWorkers.enabled", "dom.serviceworkers.enabled", "DOM.SERVICEWORKERS.ENABLED"]) {
+    await assert.rejects(
+      validateBrowserOptionsInput({ firefox_user_prefs: { [key]: true } }),
+      /denied by server policy/,
+      key + " must remain denied when unsafe options are enabled",
+    );
+  }
+  await assert.doesNotReject(validateBrowserOptionsInput({ firefox_user_prefs: { "browser.startup.page": 0 } }));
+`], { env: { ...process.env, CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS: "1" } });
+
+// --- IPv6 ranges ---------------------------------------------------------------
+{
+  const { isBlockedIp, normalizeHostname, isLoopbackNavigationError } = await import("../dist/policy.js");
+
+  // NAT64 well-known prefix: the embedded IPv4 address decides. On a DNS64
+  // network every IPv4-only site resolves into this range, so blocking the
+  // prefix outright made those networks unusable.
+  assert.equal(isBlockedIp("64:ff9b::5db8:d822"), false, "NAT64 form of a public address is allowed");
+  assert.equal(isBlockedIp("64:ff9b::808:808"), false);
+  for (const address of ["64:ff9b::7f00:1", "64:ff9b::a00:1", "64:ff9b::c0a8:1", "64:ff9b::a9fe:a9fe", "64:ff9b::1", "64:ff9b:1::5db8:d822"]) {
+    assert.equal(isBlockedIp(address), true, address + " embeds or is a non-public address");
+  }
+
+  // IPv4-compatible, IPv4-translated, and deprecated site-local space.
+  for (const address of ["::7f00:1", "::a00:1", "::ffff:0:7f00:1", "fec0::1", "feff::1", "::2", "::"]) {
+    assert.equal(isBlockedIp(address), true, address + " must be blocked");
+  }
+  for (const address of ["2606:4700:4700::1111", "2a00:1450:4001:81b::200e"]) {
+    assert.equal(isBlockedIp(address), false, address + " is public");
+  }
+
+  assert.equal(normalizeHostname("LocalHost..."), "localhost");
+  assert.throws(() => parseAndValidateTargetUrl("http://localhost../"), /not allowed/);
+
+  // The loopback pattern must recognise IPv6 loopback, which \b cannot anchor.
+  for (const message of ["page.goto: NS_ERROR_CONNECTION_REFUSED at http://[::1]:8080/", "connection to ::1 refused", "net::ERR at http://127.0.0.1/", "http://LOCALHOST:3000/"]) {
+    assert.equal(isLoopbackNavigationError(message), true, message);
+  }
+  // "::1:443" is not matched: without brackets it is a different address.
+  for (const message of ["connect ECONNREFUSED 2606:4700::1:443", "connect ECONNREFUSED ::1:443", "failed at https://example.com/", "fe80::1%eth0 unreachable", "2001:db8::1 refused"]) {
+    assert.equal(isLoopbackNavigationError(message), false, message);
+  }
+}
 
 const originalNodeEnv = process.env.NODE_ENV;
 const originalAllowLocalhost = process.env.CAMOUFOX_MCP_TEST_ALLOW_LOCALHOST;

@@ -40,7 +40,13 @@ export async function buildFindPayload(
         }
         const path: string[] = [];
         let current: Element | null = element;
-        while (current && current !== document.documentElement && path.length < 8) {
+        // Walk to the nearest ancestor with an id, or to the root. A path cut off
+        // at a fixed depth is relative and matches the first similar subtree.
+        while (current && current !== document.documentElement) {
+          if (current !== element && current.id) {
+            path.unshift(`#${cssIdent(current.id)}`);
+            break;
+          }
           let part = current.tagName.toLowerCase();
           const parent: Element | null = current.parentElement;
           if (parent) {
@@ -84,7 +90,13 @@ export async function buildFindPayload(
         return true;
       }
 
-      const normalizedQuery = searchQuery.toLowerCase();
+      // Page text is whitespace-collapsed before matching, so the query is too;
+      // otherwise a query containing a double space could never match.
+      const collapsedQuery = searchQuery.replace(/\s+/g, " ");
+      if (!collapsedQuery) {
+        return { matches: [], truncated: false, found: true };
+      }
+      const queryPattern = new RegExp(collapsedQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
       const matches = [];
       let truncated = false;
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -103,23 +115,29 @@ export async function buildFindPayload(
         }
 
         const rawText = (node.nodeValue ?? "").replace(/\s+/g, " ");
-        const index = rawText.toLowerCase().indexOf(normalizedQuery);
-        if (index < 0) {
-          continue;
+        // Report every non-overlapping occurrence in this text node. Matching
+        // case-insensitively on the original text keeps indices aligned:
+        // lower-casing first can change a string's length ("\u0130").
+        const nodeSelector = selectorFor(node.parentElement ?? root);
+        queryPattern.lastIndex = 0;
+        for (let match = queryPattern.exec(rawText); match; match = queryPattern.exec(rawText)) {
+          if (matches.length >= maxItems) {
+            truncated = true;
+            break;
+          }
+
+          const start = Math.max(0, match.index - surroundingChars);
+          const end = Math.min(rawText.length, match.index + match[0].length + surroundingChars);
+          matches.push({
+            text: rawText.slice(start, end).trim(),
+            selector: nodeSelector,
+            score: 1,
+          });
         }
 
-        if (matches.length >= maxItems) {
-          truncated = true;
+        if (truncated) {
           break;
         }
-
-        const start = Math.max(0, index - surroundingChars);
-        const end = Math.min(rawText.length, index + searchQuery.length + surroundingChars);
-        matches.push({
-          text: rawText.slice(start, end).trim(),
-          selector: selectorFor(node.parentElement ?? root),
-          score: 1,
-        });
       }
 
       return { matches, truncated, found: true };

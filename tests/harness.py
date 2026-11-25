@@ -3,6 +3,9 @@ sys.dont_write_bytecode = True
 
 import json
 import os
+import base64
+import hashlib
+import socket
 import subprocess
 import threading
 import time
@@ -18,6 +21,7 @@ TEST_ENV = {
     "CAMOUFOX_MCP_NETWORK_SANDBOX": "0",
     "CAMOUFOX_MCP_REQUIRE_NETWORK_SANDBOX": "0",
     "CAPTCHA_AUTONOMOUS": "false",
+    "CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS": "",
 }
 
 
@@ -28,16 +32,63 @@ class FixtureServer:
         self.httpd = None
         self.thread = None
         self.base_url = None
+        self.websocket_handshakes = 0
+        self.websocket_ready_messages = 0
 
     def start(self):
         if self.httpd:
             return
 
         fixtures = self.fixtures
+        fixture_server = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 parsed = urllib.parse.urlparse(self.path)
+                if parsed.path == "/websocket":
+                    if self.headers.get("Upgrade", "").lower() != "websocket":
+                        self.send_error(400)
+                        return
+                    key = self.headers.get("Sec-WebSocket-Key", "")
+                    accept = base64.b64encode(hashlib.sha1(
+                        (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
+                    ).digest()).decode("ascii")
+                    message = b"websocket fixture connected"
+                    fixture_server.websocket_handshakes += 1
+                    # Send a real RFC 6455 upgrade and text frame so interception
+                    # must forward traffic, rather than merely suppress errors.
+                    self.wfile.write((
+                        "HTTP/1.1 101 Switching Protocols\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
+                    ).encode("ascii"))
+                    self.wfile.flush()
+                    self.close_connection = True
+                    self.connection.settimeout(5)
+                    # Wait for client acknowledgement before replying, proving
+                    # both forwarding directions without a delivery timing gap.
+                    try:
+                        header = self.rfile.read(2)
+                        if len(header) != 2 or header[0] != 0x81 or header[1] != 0x85:
+                            return
+                        mask = self.rfile.read(4)
+                        payload = self.rfile.read(5)
+                        if len(mask) != 4 or len(payload) != 5:
+                            return
+                        ready = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+                        if ready != b"ready":
+                            return
+                        fixture_server.websocket_ready_messages += 1
+                        self.wfile.write(bytes([0x81, len(message)]) + message)
+                        self.wfile.flush()
+                        # Keep the socket alive until browser teardown, so an
+                        # immediate server close cannot outrun DOM delivery.
+                        self.rfile.read(1)
+                    except (socket.timeout, OSError):
+                        pass
+                    return
+
                 if parsed.path == "/example":
                     self._send_html("""<!doctype html>
 <html>
@@ -117,8 +168,71 @@ class FixtureServer:
         self.fixtures[fixture_id] = html
         return f"{self.base_url}/fixture/{fixture_id}"
 
+    def websocket_url(self):
+        return self.url("/websocket").replace("http://", "ws://", 1)
+
+
+class PrivateWebSocketListener:
+    """Observe forbidden traffic on a port outside the fixture allowlist."""
+    def __init__(self, mode):
+        self.mode = mode
+        self.socket = None
+        self.thread = None
+        self.connected = threading.Event()
+        self.stopping = threading.Event()
+        self.received = b""
+
+    def __enter__(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.bind(("0.0.0.0", 0))
+        self.socket.listen(1)
+        self.socket.settimeout(0.1)
+        port = self.socket.getsockname()[1]
+        host = "host.docker.internal" if self.mode == "docker" else "127.0.0.1"
+        self.url = f"ws://{host}:{port}/private-socket"
+        self.thread = threading.Thread(target=self._listen, daemon=True)
+        self.thread.start()
+        return self
+
+    def _listen(self):
+        while not self.stopping.is_set():
+            try:
+                connection, _ = self.socket.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            self.connected.set()
+            with connection:
+                connection.settimeout(0.5)
+                try:
+                    self.received = connection.recv(8192)
+                except (socket.timeout, OSError):
+                    pass
+            return
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.stopping.set()
+        self.socket.close()
+        self.thread.join(timeout=1)
+
+
+# Tools that launch a browser and therefore accept the shared `geoip` option.
+BROWSER_LAUNCH_TOOLS = frozenset({
+    "browse", "browse_snapshot", "browse_sequence", "browse_links", "browse_forms",
+    "browse_outline", "browse_find", "browse_screenshot", "browse_console",
+    "browse_network_summary", "browse_session_start",
+})
+
 
 class MCPTestClient:
+    # Shared across every client a test spawns: MCP stdout must carry JSON-RPC
+    # objects only, so any other line is a protocol violation that fails the run.
+    stdout_violations = []
+    # Set by --no-geoip for environments that cannot fetch the GeoIP database.
+    # GeoIP-enabled launches are then not exercised by the run.
+    disable_geoip = False
+
     def __init__(self, mode='docker', image_name="camoufox-mcp-server:latest", docker_platform=None, env=None):
         self.mode = mode
         self.image_name = image_name
@@ -134,6 +248,8 @@ class MCPTestClient:
     def start_server(self):
         self.fixture_server.start()
         server_env = dict(self.env)
+        # Fork: the Docker image defaults to MCP_TRANSPORT=http; cases with their own env still need stdio.
+        server_env.setdefault("MCP_TRANSPORT", "stdio")
         if server_env.get("CAMOUFOX_MCP_TEST_ALLOW_LOCALHOST") == "1" and "CAMOUFOX_MCP_TEST_ALLOWED_LOCALHOST_PORTS" not in server_env:
             parsed_fixture_url = urllib.parse.urlparse(self.fixture_server.base_url)
             server_env["CAMOUFOX_MCP_TEST_ALLOWED_LOCALHOST_PORTS"] = str(parsed_fixture_url.port)
@@ -145,7 +261,6 @@ class MCPTestClient:
                 "run",
                 "-i",
                 "--rm",
-                "--init",
                 "--add-host",
                 "host.docker.internal:host-gateway",
             ]
@@ -194,13 +309,19 @@ class MCPTestClient:
 
     def _read_output(self):
         for line in self.process.stdout:
+            if not line.strip():
+                continue
             try:
                 response = json.loads(line)
-                request_id = response.get("id")
-                if request_id:
-                    self.responses[request_id] = response
             except json.JSONDecodeError:
-                print(f"[Server STDOUT]: {line.strip()}")
+                response = None
+            if not isinstance(response, dict):
+                MCPTestClient.stdout_violations.append(line.strip()[:300])
+                print(f"[Server STDOUT protocol violation]: {line.strip()}")
+                continue
+            request_id = response.get("id")
+            if request_id:
+                self.responses[request_id] = response
 
     def _read_errors(self):
         for line in self.process.stderr:
@@ -210,6 +331,10 @@ class MCPTestClient:
 
     def send_request(self, method, params):
         request_id = str(uuid.uuid4())
+        if (MCPTestClient.disable_geoip and method == "tools/call"
+                and params.get("name") in BROWSER_LAUNCH_TOOLS
+                and "geoip" not in params.get("arguments", {})):
+            params = {**params, "arguments": {**params.get("arguments", {}), "geoip": False}}
         request = {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -237,6 +362,20 @@ class MCPTestClient:
             "arguments": params
         })
         return self.get_response(request_id, timeout=timeout)
+
+    def _call_tool_until(self, method, params, accept, deadline=30, interval=0.5, timeout=30):
+        """Repeat a call until accept(response) holds or the deadline passes.
+
+        Browser-side timing is not fixed: the default build's uBlock Origin holds
+        requests issued shortly after launch until its filter lists have loaded.
+        Returns the last response either way, so the caller's assertions report it.
+        """
+        give_up_at = time.time() + deadline
+        while True:
+            response = self._call_tool(method, params, timeout=timeout)
+            if (response and accept(response)) or time.time() >= give_up_at:
+                return response
+            time.sleep(interval)
 
     def get_response(self, request_id, timeout=30):
         start_time = time.time()
@@ -340,3 +479,4 @@ class MCPTestClient:
         print("InitializedNotification sent.")
         time.sleep(1) # Allow server to process notification
         print("Handshake complete!")
+        return init_response

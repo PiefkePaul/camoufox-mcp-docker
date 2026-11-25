@@ -31,7 +31,13 @@ export async function extractLinks(
 
         const path: string[] = [];
         let current: Element | null = element;
-        while (current && current !== document.documentElement && path.length < 8) {
+        // Walk to the nearest ancestor with an id, or to the root. A path cut off
+        // at a fixed depth is relative and matches the first similar subtree.
+        while (current && current !== document.documentElement) {
+          if (current !== element && current.id) {
+            path.unshift(`#${cssIdent(current.id)}`);
+            break;
+          }
           let part = current.tagName.toLowerCase();
           if (current.classList.length > 0) {
             part += `.${Array.from(current.classList).slice(0, 2).map(cssIdent).join(".")}`;
@@ -53,10 +59,10 @@ export async function extractLinks(
       }
 
       function textOf(element: Element): string {
-        return (element.textContent ?? element.getAttribute("aria-label") ?? element.getAttribute("title") ?? "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 500);
+        // Icon links often have empty textContent and a useful accessible label.
+        return [element.textContent, element.getAttribute("aria-label"), element.getAttribute("title")]
+          .map((value) => (value ?? "").replace(/\s+/g, " ").trim())
+          .find(Boolean)?.slice(0, 500) ?? "";
       }
 
       function isVisible(element: Element): boolean {
@@ -80,10 +86,10 @@ export async function extractLinks(
         }
 
         const visible = isVisible(link);
-        const text = textOf(link);
-        if (!text && !visible) {
+        if (!visible) {
           continue;
         }
+        const text = textOf(link);
 
         if (links.length >= maxItems) {
           truncated = true;

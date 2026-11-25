@@ -1,6 +1,6 @@
 ---
 name: camoufox
-description: Browser automation with Camoufox MCP. Use when an agent needs to browse a URL, extract page text or structure, fill or submit forms, click through a page, screenshot, run diagnostics, drive a multi-step interactive browser session, or tune privacy and anti-detection options through the camoufox-mcp-server MCP server. Also use when a fetch or HTTP request gets blocked, returns a bot wall, or needs a real browser fingerprint.
+description: Browser automation with Camoufox MCP. Use when an agent needs to browse a URL, extract page text or structure, fill or submit forms, click through a page, screenshot, run diagnostics, drive a multi-step interactive browser session, or tune privacy and anti-detection options through the camoufox-mcp-server MCP server. Also use when a fetch or HTTP request gets blocked, returns a bot wall, needs a real browser fingerprint, or Camoufox URL policy blocks a private development hostname.
 ---
 
 # Camoufox Browser Automation
@@ -28,34 +28,42 @@ This skill does not start the server. Confirm an MCP server named `camoufox` is 
 
 Bare `npx -y camoufox-mcp-server@latest` remains safe by default unless the host config adds that env var.
 
-On a fresh machine the first `browse` needs the Camoufox binary (~780MB), which npx installs do not prefetch. If a call returns `Camoufox browser binary not installed. Run: npx -y camoufox-js@0.10.2 fetch`, run that one-time command (it lands in the shared OS cache; do not omit the version pin) and retry.
+On a fresh machine, install the Camoufox binary once. From a repository checkout, run `npm run fetch:camoufox`. Global installs of 2.6.0 expose `camoufox-mcp-fetch` and `camoufox-mcp-doctor`. npx installs can use `npx --yes --package camoufox-mcp-server@2.7.3 camoufox-mcp-fetch` (replace the last command with `camoufox-mcp-doctor` for diagnostics). Use the same environment as the MCP server. Avoid `camoufox-js fetch`: its updater can select a build that bypasses WebSocket interception. Status and launch preflight inspect the cache without downloading.
 
 ## Bring the Server Up (operator / local checkout)
 
-`npx camoufox-mcp-server@latest` self-installs, but a local checkout or a first
-run needs the browser binary fetched and a preflight before you trust it:
+`npx camoufox-mcp-server@latest` installs the server package only. The server
+never downloads the browser, so a local checkout or a first run needs the
+browser binary fetched and a preflight before you trust it:
 
 ```bash
-npm install            # Node >=22 required
+npm ci --include=optional # lockfile-pinned install; repository builds require Node >=22.15
 npm run build          # compile dist/
 npm run fetch:camoufox # download the Camoufox browser binary
 npm run doctor         # preflight: pins, cached binary, live browse smoke test
 ```
 
-`npm run doctor` is the guardrail. It verifies Node >=22, the exact `camoufox-js`
-pin, that `playwright-core` resolves to the pinned version (it floats otherwise),
-that the cached browser build matches the expected one, and then drives a real
-`browse` to prove the browser actually launches. Run it first whenever the server
-misbehaves; it prints the exact fix (including the cache wipe command) for each
-failure. Then register the server with your host (see Host Setup Failures below
-for Hermes).
+`npm run doctor` verifies Node, launcher/Playwright pins, and the selected cached browser, then drives a real `browse` when preflight passes. Run it when the server misbehaves; it prints the failed check and fix. The published default runtime supports Node >=22.0 without the optional launcher. Repository builds require Node >=22.15 and that launcher for TypeScript declarations. Then register the server with your host (see Host Setup Failures below for Hermes).
+
+## Opt In to the Newer Browser
+
+The default is beta.28 with `camoufox-js` 0.12.0 and direct `playwright-core` 1.59.0. Beta.41 compatibility uses the optional official `camoufox` 0.5.9 launcher and requires Node >=22.15. From a checkout:
+
+```bash
+CAMOUFOX_MCP_BROWSER_COMPATIBILITY=1 npm run fetch:camoufox
+CAMOUFOX_MCP_BROWSER_COMPATIBILITY=1 npm run doctor
+```
+
+Set `CAMOUFOX_MCP_BROWSER_COMPATIBILITY=1` in the host's MCP server environment too. Compatibility uses a separate `camoufox-compatibility` sibling cache unless `CAMOUFOX_INSTALL_DIR` selects another directory. Use the same values for installation and startup.
+
+This mode disables the newer browser's world isolation to restore page/iframe WebSocket interception. Websites can inspect automation JavaScript, so it reduces stealth relative to upstream defaults. Beta.28 also runs automation in the page world. Dedicated-worker WebSockets evade interception in both modes; untrusted browsing requires actual network egress controls. See the repository's [browser compatibility guide](https://github.com/whit3rabbit/camoufox-mcp/blob/main/docs/browser-compatibility.md) for evidence and remaining limits.
 
 ## Tool Names
 
 Hosts expose MCP tool names differently. Use whatever the host lists; common forms:
 
 - Hermes style: `mcp_camoufox_browse` (single underscore, `mcp_<server>_<tool>`; some setups show the double `mcp__camoufox__browse`)
-- Claude Code style: `mcp__camoufox__browse`
+- Claude Code style: `mcp__camoufox__browse` for a manual `claude mcp add camoufox`; a plugin install may namespace the server name, so use whatever the tool list shows
 - OpenClaw bundle style: `camoufox__browse`
 - Raw MCP name: `browse`
 
@@ -96,16 +104,43 @@ Call `camoufox_status` before relying on advanced behavior. It returns server, b
 
 Fields worth reading:
 
-- `browserAvailable`: must be `true`, or nothing will run.
+- `browserAvailable`: the selected binary and version were found; this does not prove a launch works. Confirm an actual `browse`.
+- `browserCompatibility`: mode, expected/installed versions, launcher, and warning. Both supported modes report `worldIsolationEnabled: false`.
 - `unsafeOptionsAllowed`: must be `true` before sending `firefox_user_prefs`, `args`, or `exclude_addons`.
 - `evaluateAllowed`: must be `true` before using the `evaluate` action in a sequence/session.
 - `maxConcurrency`, `maxQueue`, `maxSessions`, `sessionTtlMs`: capacity limits. Sessions auto-expire after `sessionTtlMs`; don't start more than `maxSessions`.
 - `activeSessions`, `queuedRequests`: current load.
 - `networkSecurity`: the server's application-layer URL policy. `ssrfPolicy: "app_layer_best_effort"` means best-effort SSRF filtering, not proof of network isolation. Check `warning` and `strictSandboxRequired`.
+- `networkSecurity.allowedPrivateHosts`: exact hostnames allowed to resolve to loopback or private addresses. This is a server startup setting; an empty list keeps the default private-host block.
 
 The active default wait strategy and stealth profile are advertised separately, during MCP `initialize`, at `result.capabilities.extensions["camoufox-mcp"].policy` (`defaultWaitStrategy`, `defaultStealthProfile`) — not in the `camoufox_status` body.
 
 Packaged plugin default: the bundled config sets `CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS=1`. Bare server installs do not. Do not add `CAMOUFOX_MCP_ALLOW_EVALUATE` unless the user or project config explicitly opts in.
+
+## Private development hosts
+
+The default URL policy blocks local/private addresses, including DNS names that resolve to them. The opt-in works with any exact hostname, such as `localhost`, `laravel.test`, `app.local`, `dashboard.internal`, or `intranet.corp`; it is not restricted to a domain suffix.
+
+Read the full MCP error when a URL or resource is blocked. For an eligible private hostname, the error includes a remedy such as `CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS=dashboard.internal` and a server restart instruction. The hint refers to the blocked resource's hostname, which may differ from the page hostname.
+
+For the trusted private hosts required by the user's task:
+
+1. Add their exact hostnames to the existing MCP server's `env` configuration, preserving current entries:
+
+   ```json
+   {
+     "CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS": "localhost,laravel.test,dashboard.internal"
+   }
+   ```
+
+2. Restart the MCP server through the host. Changing your shell environment does not update a running server. Use the host CLI or operator instructions when its configuration cannot be edited directly.
+3. Confirm `camoufox_status.networkSecurity.allowedPrivateHosts` contains the requested hostname, then retry the original browser call. Restarted sessions require a new `sessionId`. If the status field is absent, use a server build containing this feature, currently available from repository `main`; older published packages can ignore the setting.
+
+Names must resolve through DNS or hosts entries in the environment running Node and the browser, including a container or VM. Entries are comma-separated hostnames, with no wildcard, URL, port, or IP literal. Each private asset or redirect hostname needs its own entry. For a direct loopback or ordinary private-IP URL, configure a resolvable hostname and browse using that name.
+
+This setting is not a tool argument. `CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS`, Firefox preferences, and test-only localhost settings do not replace it. Metadata, link-local, multicast, unspecified, and reserved addresses remain blocked even for listed hosts; an error without an opt-in remedy may identify one of those addresses. Add only hosts required by the user's task.
+
+Read [private-host JSON-RPC setup](references/json-rpc-debug.md#test-a-private-development-host) when debugging the startup environment or an error hint.
 
 ## Common Calls
 
@@ -270,7 +305,7 @@ Read `references/json-rpc-debug.md` when the host hasn't registered the server o
 
 ## Host Setup Failures
 
-Native module errors such as `better-sqlite3` compiled for the wrong Node.js version (`NODE_MODULE_VERSION` mismatch) come from this server's own dependency tree: `camoufox-js` pulls in `better-sqlite3`, whose native binary is tied to the Node version that ran the install. On Node 22.15+ the server (2.1.6+) avoids the native module entirely by using the built-in `node:sqlite`, so first make sure the gateway launches an up-to-date server version. If the error persists on an older Node, remember that `npx` keeps its own dependency copy under `~/.npm/_npx/<hash>/node_modules` — rebuilding another checkout does not fix it; clear the npx cache (`rm -rf ~/.npm/_npx`) using the same Node version the gateway spawns, then restart the gateway because the old MCP process keeps the old native module loaded. On a local checkout, `npm run doctor` surfaces most launch-blocking problems before a `browse` fails.
+Native module errors such as `better-sqlite3` compiled for the wrong Node.js version (`NODE_MODULE_VERSION` mismatch) come from this server's own dependency tree: `camoufox-js` pulls in `better-sqlite3`, whose native binary is tied to the Node version that ran the install. On Node 22.15+ the server (2.1.6+) avoids the native module entirely by using the built-in `node:sqlite`, so first make sure the gateway launches an up-to-date server version. If the error persists on an older Node, remember that `npx` keeps its own dependency copy under `~/.npm/_npx/<hash>/node_modules` — rebuilding another checkout does not fix it; force a fresh npx dependency copy by pinning an explicit server version in the gateway's npx args (a new version spec gets a new cache entry), or have the user delete the `_npx` folder inside their npm cache directory (`npm config get cache`) by hand, using the same Node version the gateway spawns, then restart the gateway because the old MCP process keeps the old native module loaded. On a local checkout, `npm run doctor` surfaces most launch-blocking problems before a `browse` fails.
 
 If the host blocks direct config edits, do not patch protected files. Use the host CLI or tell the operator exactly what to add. For Hermes, this verified command registers Camoufox with unsafe browser options enabled:
 
@@ -301,10 +336,11 @@ If Hermes reports an ambiguous `camoufox` skill, keep only one installed Camoufo
 Common failures:
 
 - **Missing tools**: server not installed/enabled, or plugin installed but not reloaded.
+- **Private/local host rejected**: read the MCP error's `CAMOUFOX_MCP_ALLOWED_PRIVATE_HOSTS` remedy and follow [private development hosts](#private-development-hosts). Add exact required hostnames to server `env`, restart, and verify status before retrying.
 - **Unsafe option rejected**: `CAMOUFOX_MCP_ALLOW_UNSAFE_OPTIONS` not set, or a denied pref/arg was sent. The server logs which option family it rejected.
 - **`evaluate` rejected**: `CAMOUFOX_MCP_ALLOW_EVALUATE` not set (`evaluateAllowed: false`).
 - **Hanging navigation**: a call overrode `waitStrategy` to `load`/`networkidle`; revert to `domcontentloaded` and try a shorter `timeout`.
 - **Empty output**: narrow with `selector`, switch to `browse_snapshot`, or check `browse_console` and `browse_network_summary`.
-- **Browser won't launch / `Library not loaded: @rpath/libmozglue.dylib`**: a corrupt or mismatched binary cache, usually from fetching a new build over an old one. Wipe the cache and refetch rather than overlaying: `rm -rf ~/Library/Caches/camoufox/Camoufox.app ~/Library/Caches/camoufox/version.json && npx -y camoufox-js@0.10.2 fetch` (Linux: `rm -rf ~/.cache/camoufox && npx -y camoufox-js@0.10.2 fetch`). `npm run doctor` reports the mismatch and prints this command.
-- **`Error: ENOSPC: no space left on device` during fetch**: The ~780MB binary extracts via `/tmp/camoufox-*` temporary directories. On cloud VMs/containers with small `/tmp` tmpfs limits (e.g., 1-2GB), failed attempts leave behind ~680MB temp directories that cause disk space errors on retry. Clean them up with `rm -rf /tmp/camoufox-*` (safe if no live processes own them) before refetching.
-- **Anti-detection suddenly worse / Juggler errors after `npx @latest`**: `camoufox-js` floats `playwright-core`, so a foreign install can drift it off the pinned version. On a checkout the `overrides` pin holds it; `npm run doctor` flags a drift.
+- **Browser won't launch / `Library not loaded: @rpath/libmozglue.dylib`**: a corrupt or mismatched cache. Run the pinned installer with the same compatibility flag and `CAMOUFOX_INSTALL_DIR` as the host; it replaces mismatched builds. If metadata matches but libraries are corrupt, stop the server, move aside the exact cache directory reported by doctor, and refetch.
+- **`Error: ENOSPC: no space left on device` during fetch**: Download and storage requirements vary by platform and build. Allow space for the archive, extracted browser, and supporting assets in the install and OS temporary filesystems. Inspect installer scratch directories and confirm each is abandoned and unused by a live installer before removing that exact directory. Then retry the pinned fetch.
+- **Juggler errors after a dependency change**: this package pins `playwright-core` directly at 1.59.0 across install paths. Keep that pin with the selected browser/launcher versions; `npm run doctor` flags drift.
